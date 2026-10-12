@@ -602,6 +602,44 @@ elif TAB == "asset":
                         st.caption(f"↳ {v2['evidencia'][:160]}")
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # Video QC (post-mortem 2026-10-12: los videos bypassaban el loop)
+    tr = vd.get("temporal_review") or {}
+    tech_v = gh_json(f"jobs/{jid}/technical_validation_video.json") or {}
+    if tr or tech_v:
+        st.markdown('<div class="kv-card"><h4>🎬 Video QC</h4>', unsafe_allow_html=True)
+        # Validación técnica
+        if tech_v:
+            fails_t = [k for k, c in tech_v.items()
+                       if isinstance(c, dict) and c.get("estado") == "FAIL"]
+            icon_t = "❌" if fails_t else "✅"
+            with st.expander(f"{icon_t} Technical validation "
+                             f"({'FAIL: ' + ', '.join(fails_t) if fails_t else 'PASS'})"):
+                for k, c in tech_v.items():
+                    if not isinstance(c, dict):
+                        continue
+                    est = c.get("estado", "?")
+                    ic = {"PASS": "✅", "FAIL": "❌"}.get(est, "❓")
+                    st.markdown(f"{ic} **{k}** — {est}")
+                    if c.get("detalle"):
+                        st.caption(f"↳ {c['detalle'][:180]}")
+                st.caption("TECHNICAL_FPS es dato técnico, no prueba de fluidez percibida.")
+        # Temporal review por categoría
+        if tr:
+            with st.expander("⏱ Temporal review"):
+                for cat, c in tr.items():
+                    if not isinstance(c, dict):
+                        continue
+                    est = c.get("estado", "?")
+                    ic = {"PASS": "✅", "FAIL": "❌",
+                          "NOT_VERIFIABLE": "⚠️", "NOT_APPLICABLE": "➖"}.get(est, "❓")
+                    st.markdown(f"{ic} **{cat}** — {est}")
+                    if c.get("evidencia"):
+                        st.caption(f"📎 Evidencia: {c['evidencia'][:180]}")
+                    if c.get("notas"):
+                        st.caption(f"📝 {c['notas'][:220]}")
+                st.caption("NOT_VERIFIABLE bloquea READY_FOR_ELVIN_REVIEW (fail-closed).")
+        st.markdown("</div>", unsafe_allow_html=True)
+
     with st.expander("View technical details"):
         st.json({"meta": meta, "verdict_resumen": {k: vd.get(k) for k in
                 ("veredicto", "confianza", "motivo_principal")},
