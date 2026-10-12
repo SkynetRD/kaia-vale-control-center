@@ -174,7 +174,6 @@ with tabs[0]:
                 _send_decision("request_changes", qc_note, f"qc_rc_{jid}_{cur}")
 
 with tabs[1]:
-    cur = job["versions"][-1]["version"] if job.get("versions") else None
     if cur:
         verdict = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json")
         if verdict:
@@ -183,6 +182,39 @@ with tabs[1]:
                       "regression_check", "nota_para_usuario")})
             with st.expander("Veredicto completo"):
                 st.json(verdict)
+        # --- Visual Coverage ---
+        st.subheader("🔍 Visual Coverage")
+        cov = (verdict or {}).get("visual_coverage")
+        if not cov:
+            st.caption("Sin datos de cobertura — revisión anterior al sistema de cobertura.")
+        else:
+            for cat, items in cov.items():
+                if not isinstance(items, dict):
+                    continue
+                fails = [k for k, v in items.items()
+                         if isinstance(v, dict) and v.get("estado") == "FAIL"]
+                with st.expander(f"{cat} {'❌' if fails else '✅'} ({len(items)} ítems)"):
+                    for k, v in items.items():
+                        if not isinstance(v, dict):
+                            continue
+                        est = v.get("estado", "?")
+                        icon = {"PASS": "✅", "FAIL": "❌",
+                                "NOT_VISIBLE": "👁️‍🗨️", "NOT_APPLICABLE": "➖"}.get(est, "❓")
+                        st.markdown(f"{icon} **{k}** — {est}")
+                        if v.get("evidencia"):
+                            st.caption(f"↳ {v['evidencia']} (conf. {v.get('confianza', '?')})")
+        # --- Auditoría: qué recibió el supervisor ---
+        audit = gh_json(f"jobs/{jid}/versions/{cur}/audit.json")
+        if audit:
+            with st.expander("📦 Auditoría de evidencia"):
+                ao = audit.get("asset_original", {})
+                st.markdown(f"**Asset original:** {ao.get('resolucion', '?')} "
+                            f"`{str(ao.get('sha256', ''))[:12]}`")
+                for p in audit.get("partes", []):
+                    if "resolucion_enviada" in p:
+                        st.caption(f"🖼️ {p['rol']}: enviada {p['resolucion_enviada']} "
+                                   f"({p['kb']} KB, {p['formato']})")
+                st.caption(f"System prompt: {audit.get('instrucciones_enviadas', {}).get('system_prompt_chars', '?')} chars")
 
 with tabs[2]:
     ev = gh_json(f"jobs/{jid}/events.json") or {"lines": []}
@@ -246,6 +278,12 @@ with learn_tab1:
     c1.metric("Racha sin desacuerdos", metrics.get("jobs_consecutivos_sin_desacuerdo", 0))
     c2.metric("Llamadas evitadas", metrics.get("llamadas_evitadas", 0))
     c3.metric("Reglas aprendidas", metrics.get("reglas_aprendidas", 0))
+    hcm = metrics.get("human_caught_miss", 0)
+    if hcm:
+        st.error(f"⚠️ HUMAN_CAUGHT_MISS: {hcm} — defectos que Elvin detectó y Muse+Supervisor omitieron. "
+                 "Bloquea la salida de FASE_1.")
+        for d in metrics.get("human_caught_miss_detalle", []):
+            st.caption(f"• {d['job_id']} {d['version']}: {', '.join(d['hallazgos'][:2])}")
     if metrics.get("defectos_repetidos"):
         st.warning(f"Defectos repetidos: {metrics['defectos_repetidos']}")
     cpj = metrics.get("costo_supervisor_por_job", {})
