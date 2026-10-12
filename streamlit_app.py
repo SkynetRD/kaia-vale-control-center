@@ -36,10 +36,15 @@ if "auth" not in st.session_state:
     st.session_state.auth = False
 if not st.session_state.auth:
     st.title("🎛️ Kaia Vale Control Center")
-    pw = st.text_input("Password", type="password")
-    if st.button("Entrar") and pw == PASSWORD:
-        st.session_state.auth = True
-        st.rerun()
+    with st.form("login"):
+        pw = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Entrar")
+    if submitted:
+        if pw == PASSWORD:
+            st.session_state.auth = True
+            st.rerun()
+        else:
+            st.error("Password incorrecto.")
     st.stop()
 
 
