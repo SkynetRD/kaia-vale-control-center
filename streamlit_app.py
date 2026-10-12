@@ -249,6 +249,8 @@ def _decision_pending() -> bool:
 def global_status():
     """(label, badge_class). Derivado del estado real del pipeline."""
     s = state.get("state", "")
+    if s == "APPROVED":
+        return ("APPROVED ✓", "b-green")
     if _decision_pending() or s == "ELVIN_DECISION_REQUIRED":
         return ("WAITING FOR ELVIN", "b-amber")
     if s == "ESCALATED_INTERNAL":
@@ -342,6 +344,7 @@ if TAB == "home":
     # Pipeline MUSE → GENERATION → QC → SUPERVISOR → CORRECTION → READY
     nodes = ["MUSE", "GENERATION", "QC", "SUPERVISOR", "CORRECTION", "READY"]
     active_idx = {"PRODUCING": 1, "REVIEWING": 3, "WAITING FOR ELVIN": 5}.get(glabel, -1)
+    all_done = glabel.startswith("APPROVED")
     # si la última acción fue corrección, iluminar CORRECTION en PRODUCING
     last_v = curinfo.get("veredicto_efectivo", "")
     if glabel == "PRODUCING" and last_v == "CORREGIR":
@@ -349,7 +352,7 @@ if TAB == "home":
     subs = {0: "agent", 1: "krea 2", 2: "local", 3: "gpt-5", 4: "krea 2", 5: "elvin"}
     pipe = '<div class="pipe">'
     for i, n in enumerate(nodes):
-        cls = "active" if i == active_idx else ("done" if 0 <= active_idx and i < active_idx else "")
+        cls = "active" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
         dot = '<span class="pulse"></span>' if i == active_idx else ""
         pipe += (f'<div class="pnode {cls}"><div class="t">{dot}{n}</div>'
                  f'<div class="s">{subs[i]}</div></div>')
@@ -362,7 +365,11 @@ if TAB == "home":
 
     # Live agent activity (derivado del estado real)
     steps = []
-    if glabel == "WAITING FOR ELVIN":
+    if glabel.startswith("APPROVED"):
+        steps = [("Muse", "Trabajo completado", "done"),
+                 ("Supervisor", "Revisión completada", "done"),
+                 ("Elvin", f"Aprobó {cur}", "done")]
+    elif glabel == "WAITING FOR ELVIN":
         steps = [("Muse", "Asset generado y verificado", "done"),
                  ("Supervisor", "Revisión completada", "done"),
                  ("Elvin", "Tu revisión requerida", "active")]
@@ -456,7 +463,15 @@ elif TAB == "asset":
     vd = gh_json(f"jobs/{jid}/versions/{sel_v}/verdict.json") or {}
     dec = gh_json(f"jobs/{jid}/versions/{sel_v}/decision.json") or {}
     audit = gh_json(f"jobs/{jid}/versions/{sel_v}/audit.json") or {}
-    lbl, lbadge = verdict_badge(vinfo.get("veredicto_efectivo"))
+    # Si Elvin ya decidió sobre esta versión, mostrar el resultado real
+    dec_elvin = gh_json(f"jobs/{jid}/versions/{sel_v}/decision_elvin.json") if vinfo.get("decidido") else None
+    if dec_elvin:
+        lbl = {"approve_final": "APROBADA ✓", "reject": "RECHAZADA",
+               "request_changes": "CAMBIOS PEDIDOS"}.get(dec_elvin.get("decision"), "DECIDIDA")
+        lbadge = {"approve_final": "b-green", "reject": "b-red",
+                  "request_changes": "b-amber"}.get(dec_elvin.get("decision"), "b-gray")
+    else:
+        lbl, lbadge = verdict_badge(vinfo.get("veredicto_efectivo"))
 
     st.markdown(f"""<div class="kv-card" style="text-align:center">
       <span class="badge {lbadge}" style="font-size:.9rem;padding:6px 18px">{sel_v} · {lbl}</span>
