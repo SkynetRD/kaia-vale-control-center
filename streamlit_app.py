@@ -367,6 +367,17 @@ if pending:
       <div class="kv-muted">{jid} · <b style="color:var(--text)">{cur}</b> está lista para tu decisión</div>
       </div>""", unsafe_allow_html=True)
 
+# Banner BLOCKED_ON_ELVIN: visible en TODAS las pestañas, arriba del todo.
+# Si Muse está detenido esperando a Elvin, esto es lo primero que se ve.
+_ms_top = gh_json("progress/muse_status.json") or {}
+if _ms_top.get("status") == "BLOCKED_ON_ELVIN" and _ms_top.get("needs_decision"):
+    st.markdown(f"""<div class="decide-banner" style="border:3px solid #f59e0b">
+      <h2>🟡 MUSE NECESITA TU DECISIÓN</h2>
+      <div style="font-size:1.05rem;font-weight:600;color:var(--text)">
+        {_ms_top.get("needs_decision", "")[:300]}</div>
+      <div class="kv-muted">Muse está detenido. No avanza hasta que respondas en el chat.</div>
+      </div>""", unsafe_allow_html=True)
+
 def build_events():
     """Eventos reales del job, ordenados. Sin invenciones."""
     evs = []
@@ -444,13 +455,6 @@ if TAB == "home":
     if stale:
         st.caption("⚠️ Sin heartbeat reciente. La tarea podría estar congelada "
                    "(no se cancela automáticamente).")
-    # Banner prioritario: bloqueado esperando decisión de Elvin
-    if mstatus == "BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
-        st.markdown(f"""<div class="kv-card" style="border:2px solid #f59e0b">
-          <h4>🟡 NECESITO TU DECISIÓN</h4>
-          <div style="font-weight:600">{ms.get("needs_decision")[:300]}</div>
-          <div class="kv-muted">Muse está detenido esperando tu respuesta. No avanza hasta que decidas.</div>
-          </div>""", unsafe_allow_html=True)
 
     # Pipeline MUSE → GENERATION → QC → SUPERVISOR → CORRECTION → READY
     nodes = ["MUSE", "GENERATION", "QC", "SUPERVISOR", "CORRECTION", "READY"]
