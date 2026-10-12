@@ -377,6 +377,14 @@ if _ms_top.get("status") == "BLOCKED_ON_ELVIN" and _ms_top.get("needs_decision")
       <h2>🟡 MUSE NECESITA TU DECISIÓN</h2>
       <div style="font-size:1.05rem;font-weight:600;color:var(--text)">{_q[:300]}</div>
       </div>""", unsafe_allow_html=True)
+    # Mostrar el asset sobre el que se decide (si hay)
+    _asset_path = _ms_top.get("asset")
+    if _asset_path:
+        _adata = gh_raw(_asset_path)
+        if _adata:
+            st.image(_adata, use_container_width=True)
+        else:
+            st.caption("⏳ Asset aún no sincronizado.")
     _b1, _b2 = st.columns(2)
     if _b1.button("✅ SÍ, CONTINÚA", key="elvin_yes", type="primary",
                   use_container_width=True):
