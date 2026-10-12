@@ -189,9 +189,23 @@ def gh_json(path: str):
 
 def gh_put_json(path: str, obj: dict, msg: str) -> bool:
     content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=1).encode()).decode()
+    body = {"message": msg, "content": content}
+    try:
+        # Si el archivo existe, GitHub exige el sha para actualizarlo
+        existing = gh_json_raw(path)
+        if existing and existing.get("sha"):
+            body["sha"] = existing["sha"]
+    except Exception:
+        pass
     r = requests.put(f"{API}/{path}", headers={**H, "Accept": "application/vnd.github+json"},
-                     json={"message": msg, "content": content}, timeout=20)
+                     json=body, timeout=20)
     return r.status_code in (200, 201)
+
+
+def gh_json_raw(path: str):
+    """Devuelve el objeto crudo de la Contents API (incluye sha)."""
+    r = requests.get(f"{API}/{path}", headers=H, timeout=20)
+    return r.json() if r.status_code == 200 else None
 
 
 # ---------------- auth gate ----------------
