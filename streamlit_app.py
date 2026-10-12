@@ -93,6 +93,10 @@ state = gh_json(f"jobs/{jid}/state.json") or {}
 st.subheader(f"{jid} — `{state.get('state', '?')}`")
 if state.get("detail"):
     st.caption(state["detail"])
+if state.get("state") == "ELVIN_DECISION_REQUIRED":
+    st.error("⛔ Requiere tu decisión: el sistema no pudo resolverlo con el canon ni las reglas. Revisa el veredicto y decide.")
+elif state.get("state") == "ESCALATED_INTERNAL":
+    st.info("🔧 Escalación interna: el supervisor tuvo incertidumbre pero el canon la resuelve automáticamente. El loop continúa solo.")
 
 tabs = st.tabs(["Versiones", "Veredicto", "Eventos", "Decidir"])
 
