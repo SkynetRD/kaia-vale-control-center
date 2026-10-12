@@ -55,6 +55,15 @@ def gh_raw(path: str) -> bytes | None:
     return r.content if r.status_code == 200 else None
 
 
+@st.cache_data(ttl=20)
+def gh_status(path: str) -> int:
+    try:
+        r = requests.get(f"{API}/{path}?ref=main", headers=H, timeout=20)
+        return r.status_code
+    except Exception:
+        return -1
+
+
 def gh_json(path: str):
     b = gh_raw(path)
     return json.loads(b.decode()) if b else None
@@ -84,6 +93,9 @@ with c2:
 jobs = snap.get("jobs", [])
 if not jobs:
     st.info("Sin jobs sincronizados todavía.")
+    code = gh_status("snapshot.json")
+    st.warning(f"Diagnóstico GitHub API: HTTP {code} — 401=token inválido o sin acceso al repo, "
+               f"404=SYNC_REPO mal escrito o repo sin contenido, -1=sin conexión.")
     st.stop()
 
 job_ids = [j["job_id"] for j in jobs]
