@@ -409,6 +409,42 @@ if TAB == "home":
       <span class="kv-muted" style="margin-left:10px">{jid}</span></div>
       </div>""", unsafe_allow_html=True)
 
+    # ---- MUSE STATUS (Progress/Heartbeat Protocol 2026-10-12) ----
+    ms = gh_json("progress/muse_status.json") or {}
+    mstatus = ms.get("status", "—")
+    mtask = ms.get("current_task") or "—"
+    mstep = ms.get("current_step") or "—"
+    mwait = ms.get("waiting_on") or "—"
+    mstarted = ms.get("started_at") or ""
+    mh = hours_since(ms.get("last_heartbeat")) if ms.get("last_heartbeat") else 999.0
+    # Stale detection: activo pero sin heartbeat >10 min -> POSSIBLY STALLED
+    stale = mstatus not in ("COMPLETED", "FAILED", "—") and mh * 60 > 10
+    sbadge = "b-red" if stale else {"WORKING": "b-green", "WAITING_ON_TOOL": "b-amber",
+                                    "BLOCKED": "b-red", "COMPLETED": "b-gray",
+                                    "FAILED": "b-red"}.get(mstatus, "b-gray")
+    slabel = "POSSIBLY STALLED" if stale else mstatus
+    st.markdown(f"""<div class="kv-card"><h4>🤖 Muse status</h4>
+      <div style="margin-bottom:8px"><span class="badge {sbadge}">{slabel}</span>
+      <span class="kv-muted" style="margin-left:10px">último heartbeat {hace_str(mh)}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">
+      <div><div class="kv-muted" style="font-size:.72rem">CURRENT TASK</div>
+        <div style="font-weight:600">{mtask[:60]}</div></div>
+      <div><div class="kv-muted" style="font-size:.72rem">CURRENT STEP</div>
+        <div style="font-weight:600">{mstep[:60]}</div></div>
+      <div><div class="kv-muted" style="font-size:.72rem">WAITING ON</div>
+        <div style="font-weight:600">{mwait}</div></div>
+      <div><div class="kv-muted" style="font-size:.72rem">STARTED AT</div>
+        <div style="font-weight:600">{fmt_ts(mstarted) if mstarted else "—"}</div></div>
+      </div></div>""", unsafe_allow_html=True)
+    hist = ms.get("history") or []
+    if hist:
+        with st.expander(f"📜 Historial de actividad ({len(hist)})"):
+            for ev in reversed(hist[-10:]):
+                st.markdown(f"• `{fmt_ts(ev.get('ts'))}` — {ev.get('event', '')[:120]}")
+    if stale:
+        st.caption("⚠️ Sin heartbeat reciente. La tarea podría estar congelada "
+                   "(no se cancela automáticamente).")
+
     # Pipeline MUSE → GENERATION → QC → SUPERVISOR → CORRECTION → READY
     nodes = ["MUSE", "GENERATION", "QC", "SUPERVISOR", "CORRECTION", "READY"]
     active_idx = {"PRODUCING": 1, "REVIEWING": 3, "WAITING FOR ELVIN": 5}.get(glabel, -1)
