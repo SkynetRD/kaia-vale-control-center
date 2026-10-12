@@ -30,12 +30,14 @@ except Exception:
 API = f"https://api.github.com/repos/{REPO}/contents"
 H = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.raw"}
 
-# ---------------- navegación ----------------
-qp = st.query_params
-TAB = qp.get("tab", "home")
+# ---------------- navegación (botones + session_state: los links <a href> recargaban
+# la página y borraban la sesión -> mandaban al login) ----------------
+if "tab" not in st.session_state:
+    st.session_state.tab = "home"
+TAB = st.session_state.tab
 if TAB not in ("home", "asset", "activity", "learning"):
     TAB = "home"
-VER = qp.get("v", "")
+    st.session_state.tab = "home"
 
 # ---------------- CSS: dark premium ----------------
 st.markdown("""<style>
@@ -98,25 +100,24 @@ a.vchip:hover{border-color:var(--accent);}
 .decide-banner h2{margin:0 0 6px;font-size:1.35rem;letter-spacing:.02em;}
 .decide-btns .stButton>button{min-height:56px;font-weight:700;font-size:1rem;border-radius:12px;}
 
-/* bottom nav (mobile) */
-.bottomnav{display:none;}
+/* nav por botones (no recarga -> no cierra sesión) */
+.nav-anchor + div[data-testid="stVerticalBlock"]{margin-bottom:14px;}
+.nav-anchor + div[data-testid="stVerticalBlock"] button{
+  background:var(--surface);border:1px solid var(--border);color:var(--muted);
+  border-radius:999px;min-height:44px;font-weight:600;}
+.nav-anchor + div[data-testid="stVerticalBlock"] button:hover{border-color:var(--accent);color:var(--accent);}
+.nav-anchor + div[data-testid="stVerticalBlock"] button[kind="primary"]{
+  background:var(--accent-dim);color:var(--accent);border-color:rgba(216,169,78,.5);}
 @media (max-width:767px){
-  .bottomnav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:999;
+  .nav-anchor + div[data-testid="stVerticalBlock"]{
+    position:fixed;bottom:0;left:0;right:0;z-index:999;margin-bottom:0;
     background:rgba(16,21,29,.96);backdrop-filter:blur(12px);
-    border-top:1px solid var(--border);padding:6px 4px calc(8px + env(safe-area-inset-bottom));}
-  .bottomnav a{flex:1;text-align:center;text-decoration:none;color:var(--muted);
-    font-size:.66rem;font-weight:600;padding:8px 2px;border-radius:10px;}
-  .bottomnav a .ic{font-size:1.25rem;display:block;margin-bottom:2px;}
-  .bottomnav a.on{color:var(--accent);background:var(--accent-dim);}
-  .topnav{display:none!important;}
+    border-top:1px solid var(--border);
+    padding:8px 8px calc(10px + env(safe-area-inset-bottom));}
+  .nav-anchor + div[data-testid="stVerticalBlock"] button{border-radius:12px;min-height:52px;}
   .block-container{padding-bottom:7.5rem;}
   .kv-big{font-size:1.5rem;}
 }
-/* top nav (desktop) */
-.topnav{display:flex;gap:8px;margin:4px 0 18px;}
-.topnav a{padding:9px 20px;border-radius:999px;border:1px solid var(--border);color:var(--muted);
-  text-decoration:none;font-weight:600;font-size:.85rem;background:var(--surface);}
-.topnav a.on{color:var(--accent);border-color:rgba(216,169,78,.5);background:var(--accent-dim);}
 
 /* activity steps */
 .step{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);}
@@ -232,7 +233,9 @@ else:
 job = next(j for j in jobs if j["job_id"] == jid)
 versions = job.get("versions", [])
 cur = versions[-1]["version"] if versions else None
-sel_v = VER if any(v["version"] == VER for v in versions) else cur
+if "ver" not in st.session_state or not any(v["version"] == st.session_state.ver for v in versions):
+    st.session_state.ver = cur
+sel_v = st.session_state.ver
 curinfo = next((x for x in versions if x["version"] == cur), {}) if cur else {}
 state = gh_json(f"jobs/{jid}/state.json") or {}
 metrics = gh_json("learning/metrics.json") or {}
@@ -246,18 +249,49 @@ def _decision_pending() -> bool:
             and not curinfo.get("decidido"))
 
 
+def hours_since(iso) -> float:
+    """Horas desde un timestamp ISO. 999 si no se puede calcular."""
+    try:
+        from datetime import timezone
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    except Exception:
+        return 999.0
+
+
+def hace_str(h: float) -> str:
+    if h >= 999:
+        return "fecha desconocida"
+    if h < 1:
+        m = int(h * 60)
+        return f"hace {m} min" if m > 0 else "ahora mismo"
+    if h < 24:
+        return f"hace {int(h)} h"
+    return f"hace {int(h / 24)} d"
+
+
+# Actividad REAL: solo se considera "en curso" si el estado se actualizó hace <15 min.
+# Nada de indicadores pulsantes con datos de hace horas.
+STATE_AGE_H = hours_since(state.get("updated"))
+IS_LIVE = STATE_AGE_H < 0.25
+
+
 def global_status():
-    """(label, badge_class). Derivado del estado real del pipeline."""
+    """(label, badge_class). Solo estados reales del job; la actividad 'en curso'
+    exige estado fresco (<15 min). Sin inferencias de texto."""
     s = state.get("state", "")
     if s == "APPROVED":
         return ("APPROVED ✓", "b-green")
     if _decision_pending() or s == "ELVIN_DECISION_REQUIRED":
         return ("WAITING FOR ELVIN", "b-amber")
-    if s == "ESCALATED_INTERNAL":
-        return ("REVIEWING", "b-blue")
-    ag = (agent.get("status") or "").lower()
-    if any(k in ag for k in ("generat", "work", "correction", "review")):
+    if not IS_LIVE:
+        return ("IDLE", "b-gray")
+    if s in ("GENERATING", "CORRECTING"):
         return ("PRODUCING", "b-green")
+    if s in ("REVIEWING", "VALIDATING", "ESCALATED_INTERNAL"):
+        return ("REVIEWING", "b-blue")
     return ("IDLE", "b-gray")
 
 
@@ -313,14 +347,15 @@ def fmt_ts(iso):
 # ---------------- navegación ----------------
 NAV = [("home", "⌂", "Home"), ("asset", "◈", "Asset"),
        ("activity", "≋", "Activity"), ("learning", "✦", "Learning")]
-topnav = '<div class="topnav">' + "".join(
-    f'<a href="?tab={t}" class="{"on" if TAB==t else ""}">{label}</a>'
-    for t, _, label in NAV) + "</div>"
-st.markdown(topnav, unsafe_allow_html=True)
-botnav = '<nav class="bottomnav">' + "".join(
-    f'<a href="?tab={t}" class="{"on" if TAB==t else ""}"><span class="ic">{ic}</span>{label}</a>'
-    for t, ic, label in NAV) + "</nav>"
-st.markdown(botnav, unsafe_allow_html=True)
+st.markdown('<div class="nav-anchor"></div>', unsafe_allow_html=True)
+with st.container():
+    ncol = st.columns(4)
+    for i, (t, ic, label) in enumerate(NAV):
+        if ncol[i].button(f"{ic} {label}", key=f"nav_{t}",
+                          type="primary" if TAB == t else "secondary",
+                          use_container_width=True):
+            st.session_state.tab = t
+            st.rerun()
 
 pending = _decision_pending()
 glabel, gbadge = global_status()
@@ -331,6 +366,39 @@ if pending:
       <h2>◈ YOUR REVIEW IS REQUIRED</h2>
       <div class="kv-muted">{jid} · <b style="color:var(--text)">{cur}</b> está lista para tu decisión</div>
       </div>""", unsafe_allow_html=True)
+
+def build_events():
+    """Eventos reales del job, ordenados. Sin invenciones."""
+    evs = []
+    for v in versions:
+        m = gh_json(f"jobs/{jid}/versions/{v['version']}/meta.json") or {}
+        if m.get("registered"):
+            evs.append((m["registered"], "g",
+                        f"Muse registered {v['version']}", v["version"]))
+    for d in disag:
+        if d.get("job_id") == jid and d.get("ts"):
+            cl = d.get("clase", "")
+            txt = {"missed_by_muse": f"Supervisor review {d.get('version')} — CORREGIR",
+                   "acuerdo": f"Supervisor review {d.get('version')} — PASS",
+                   "supervisor_false_positive": f"Supervisor flagged {d.get('version')} — overruled",
+                   "human_caught_miss": f"Elvin caught miss in {d.get('version')}",
+                   "human_calibration_positive": f"Elvin approved {d.get('version')}",
+                   "user_overrule": f"Elvin overruled {d.get('version')}"}.get(cl, f"{cl} {d.get('version')}")
+            kc = "r" if cl in ("missed_by_muse", "human_caught_miss") else ("g" if cl == "acuerdo" else "a")
+            evs.append((d["ts"], kc, txt, ""))
+    try:
+        listing = requests.get(f"{API}/decisions/inbox?ref=main", headers=H, timeout=20).json()
+        if isinstance(listing, list):
+            for f in listing:
+                d = gh_json(f"decisions/inbox/{f['name']}")
+                if d and d.get("timestamp") and d.get("job_id") == jid:
+                    evs.append((d["timestamp"], "a",
+                                f"Elvin: {d.get('action')} {d.get('version')}", ""))
+    except Exception:
+        pass
+    evs.sort(key=lambda x: x[0])
+    return evs
+
 
 # ================= HOME / COMMAND CENTER =================
 if TAB == "home":
@@ -360,42 +428,23 @@ if TAB == "home":
             pipe += f'<div class="plink {"on" if 0 <= active_idx and i < active_idx else ""}"></div>'
     pipe += "</div>"
     st.markdown(f'<div class="kv-card"><h4>Pipeline</h4>{pipe}'
-                f'<div class="kv-muted">Nodo activo según el estado real del job · '
-                f'actualización ~60s</div></div>', unsafe_allow_html=True)
+                f'<div class="kv-muted">Última actividad del job: {hace_str(STATE_AGE_H)} · '
+                f'sincronización ~60s</div></div>', unsafe_allow_html=True)
 
-    # Live agent activity (derivado del estado real)
-    steps = []
-    if glabel.startswith("APPROVED"):
-        steps = [("Muse", "Trabajo completado", "done"),
-                 ("Supervisor", "Revisión completada", "done"),
-                 ("Elvin", f"Aprobó {cur}", "done")]
-    elif glabel == "WAITING FOR ELVIN":
-        steps = [("Muse", "Asset generado y verificado", "done"),
-                 ("Supervisor", "Revisión completada", "done"),
-                 ("Elvin", "Tu revisión requerida", "active")]
-    elif glabel == "REVIEWING":
-        steps = [("Muse", "Corrección aplicada", "done"),
-                 ("Supervisor", "Inspeccionando asset…", "active"),
-                 ("Elvin", "En espera", "todo")]
-    elif glabel == "PRODUCING":
-        steps = [("Muse", "Generando corrección…", "active"),
-                 ("Supervisor", "En espera de asset", "todo"),
-                 ("Elvin", "En espera", "todo")]
+    # Actividad reciente: SOLO eventos reales con timestamp. Si no hay nada
+    # en curso, se dice explícitamente. Nada de pasos inventados.
+    evs_home = build_events()
+    st.markdown('<div class="kv-card"><h4>Recent activity</h4><div class="tl">', unsafe_allow_html=True)
+    for ts, kc, txt, _ in evs_home[-4:]:
+        st.markdown(f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
+                    f'<span class="tl-txt">{txt}</span></div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    if IS_LIVE and glabel in ("PRODUCING", "REVIEWING"):
+        st.markdown('<div style="margin:-6px 0 14px"><span class="badge b-green">'
+                    '<span class="pulse"></span>EN CURSO AHORA</span></div>', unsafe_allow_html=True)
     else:
-        v = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") if cur else {}
-        lv = (v or {}).get("veredicto", "—")
-        steps = [("Muse", f"Última versión {cur} registrada", "done"),
-                 ("Supervisor", f"Último veredicto: {lv}", "done"),
-                 ("Elvin", "Sin acciones pendientes", "todo")]
-    icons = {"done": "✓", "active": "●", "todo": "○"}
-    html = '<div class="kv-card"><h4>Live agent activity</h4>'
-    for name, desc, stt in steps:
-        dot = '<span class="pulse"></span>' if stt == "active" else ""
-        html += (f'<div class="step {stt}"><div class="sdot">{icons[stt]}</div>'
-                 f'<div><div class="st-t">{dot}{name}</div>'
-                 f'<div class="st-s">{desc}</div></div></div>')
-    html += '<div class="kv-muted" style="margin-top:8px">Inferido del último estado sincronizado.</div></div>'
-    st.markdown(html, unsafe_allow_html=True)
+        st.markdown(f'<div class="kv-muted" style="margin:-6px 0 14px">Sin actividad en curso. '
+                    f'Último evento {hace_str(STATE_AGE_H)}.</div>', unsafe_allow_html=True)
 
     # Panel de decisión
     if pending:
@@ -448,15 +497,17 @@ if TAB == "home":
 
 # ================= ASSET =================
 elif TAB == "asset":
-    # Timeline de versiones
-    chips = '<div class="vtl">'
-    for v in versions:
+    # Timeline de versiones (botones: los links recargaban y cerraban sesión)
+    st.markdown('<div class="kv-card"><h4>Version timeline</h4>', unsafe_allow_html=True)
+    vcols = st.columns(len(versions)) if versions else []
+    for i, v in enumerate(versions):
         vn = v["version"]
-        lbl, _ = verdict_badge(v.get("veredicto_efectivo"))
-        chips += (f'<a class="vchip {"sel" if vn==sel_v else ""}" '
-                  f'href="?tab=asset&v={vn}">{vn}<small>{lbl}</small></a>')
-    chips += "</div>"
-    st.markdown(f'<div class="kv-card"><h4>Version timeline</h4>{chips}</div>', unsafe_allow_html=True)
+        if vcols[i].button(vn, key=f"vsel_{jid}_{vn}",
+                           type="primary" if vn == sel_v else "secondary",
+                           use_container_width=True):
+            st.session_state.ver = vn
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     vinfo = next((x for x in versions if x["version"] == sel_v), {})
     meta = gh_json(f"jobs/{jid}/versions/{sel_v}/meta.json") or {}
@@ -559,60 +610,20 @@ elif TAB == "asset":
 
 # ================= ACTIVITY =================
 elif TAB == "activity":
-    st.markdown('<div class="kv-card"><h4>Agent pipeline</h4>', unsafe_allow_html=True)
-    steps = []
-    if glabel == "WAITING FOR ELVIN":
-        steps = [("Muse", "Asset generado y verificado", "done"),
-                 ("Supervisor", "Revisión completada", "done"),
-                 ("Elvin", "Tu revisión requerida", "active")]
-    elif glabel == "REVIEWING":
-        steps = [("Muse", "Corrección aplicada", "done"),
-                 ("Supervisor", "Inspeccionando asset…", "active"),
-                 ("Elvin", "En espera", "todo")]
-    elif glabel == "PRODUCING":
-        steps = [("Muse", "Generando corrección…", "active"),
-                 ("Supervisor", "En espera de asset", "todo"),
-                 ("Elvin", "En espera", "todo")]
+    st.markdown('<div class="kv-card"><h4>Estado actual</h4>', unsafe_allow_html=True)
+    st.markdown(f'<div style="margin-bottom:8px"><span class="badge {gbadge}">{glabel}</span></div>',
+                unsafe_allow_html=True)
+    if IS_LIVE and glabel in ("PRODUCING", "REVIEWING"):
+        st.markdown('<span class="badge b-green"><span class="pulse"></span>EN CURSO AHORA</span>',
+                    unsafe_allow_html=True)
     else:
-        steps = [("Muse", "Idle", "done"), ("Supervisor", "Idle", "done"),
-                 ("Elvin", "Idle", "todo")]
-    icons = {"done": "✓", "active": "●", "todo": "○"}
-    for name, desc, stt in steps:
-        dot = '<span class="pulse"></span>' if stt == "active" else ""
-        st.markdown(f'<div class="step {stt}"><div class="sdot">{icons[stt]}</div>'
-                    f'<div><div class="st-t">{dot}{name}</div>'
-                    f'<div class="st-s">{desc}</div></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kv-muted">Sin actividad en curso. '
+                    f'Última actualización del job {hace_str(STATE_AGE_H)}.</div>',
+                    unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Timeline de eventos (construida de datos reales)
-    evs = []
-    for v in versions:
-        m = gh_json(f"jobs/{jid}/versions/{v['version']}/meta.json") or {}
-        if m.get("registered"):
-            evs.append((m["registered"], "g",
-                        f"Muse registered {v['version']}", v["version"]))
-    for d in disag:
-        if d.get("job_id") == jid and d.get("ts"):
-            cl = d.get("clase", "")
-            txt = {"missed_by_muse": f"Supervisor review {d.get('version')} — CORREGIR",
-                   "acuerdo": f"Supervisor review {d.get('version')} — PASS",
-                   "supervisor_false_positive": f"Supervisor flagged {d.get('version')} — overruled",
-                   "human_caught_miss": f"Elvin caught miss in {d.get('version')}",
-                   "human_calibration_positive": f"Elvin approved {d.get('version')}",
-                   "user_overrule": f"Elvin overruled {d.get('version')}"}.get(cl, f"{cl} {d.get('version')}")
-            kc = "r" if cl in ("missed_by_muse", "human_caught_miss") else ("g" if cl == "acuerdo" else "a")
-            evs.append((d["ts"], kc, txt, ""))
-    try:
-        listing = requests.get(f"{API}/decisions/inbox?ref=main", headers=H, timeout=20).json()
-        if isinstance(listing, list):
-            for f in listing:
-                d = gh_json(f"decisions/inbox/{f['name']}")
-                if d and d.get("timestamp") and d.get("job_id") == jid:
-                    evs.append((d["timestamp"], "a",
-                                f"Elvin: {d.get('action')} {d.get('version')}", ""))
-    except Exception:
-        pass
-    evs.sort(key=lambda x: x[0])
+    evs = build_events()
     st.markdown('<div class="kv-card"><h4>Activity timeline</h4><div class="tl">', unsafe_allow_html=True)
     for ts, kc, txt, _ in evs[-25:]:
         st.markdown(f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
