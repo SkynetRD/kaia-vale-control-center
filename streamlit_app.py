@@ -175,6 +175,55 @@ with tabs[3]:
                 else:
                     st.error("No se pudo escribir la decisión en el repo.")
 
+# ---------------- aprendizaje operacional ----------------
+st.divider()
+st.subheader("📚 Aprendizaje operacional")
+learn_tab1, learn_tab2, learn_tab3 = st.tabs(["Métricas", "Reglas", "Desacuerdos"])
+metrics = gh_json("learning/metrics.json") or {}
+phase = gh_json("learning/phase.json") or {}
+rules_l = gh_json("learning/rules.json") or []
+disag = gh_json("learning/disagreements.json") or []
+
+with learn_tab1:
+    fase = metrics.get("fase", phase.get("fase", "?"))
+    st.markdown(f"**Fase actual: {fase}**")
+    st.caption({"FASE_1": "Supervisión total — el supervisor revisa todo.",
+                "FASE_2": "Supervisión adaptativa.", "FASE_3": "Auditoría.",
+                "FASE_4": "Muse autónomo."}.get(fase, ""))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Acuerdo Muse↔Supervisor", f"{metrics.get('acuerdo_pct', '?')}%")
+    c2.metric("Revisiones", metrics.get("revisiones_totales", 0))
+    c3.metric("Costo supervisor total", f"${metrics.get('costo_supervisor_total_usd', 0):.4f}")
+    c1.metric("Errores no detectados por Muse", metrics.get("errores_no_detectados_por_muse", 0))
+    c2.metric("Falsos positivos Muse", metrics.get("falsos_positivos_muse", 0))
+    c3.metric("Falsos positivos supervisor", metrics.get("falsos_positivos_supervisor", 0))
+    c1.metric("Racha sin desacuerdos", metrics.get("jobs_consecutivos_sin_desacuerdo", 0))
+    c2.metric("Llamadas evitadas", metrics.get("llamadas_evitadas", 0))
+    c3.metric("Reglas aprendidas", metrics.get("reglas_aprendidas", 0))
+    if metrics.get("defectos_repetidos"):
+        st.warning(f"Defectos repetidos: {metrics['defectos_repetidos']}")
+    cpj = metrics.get("costo_supervisor_por_job", {})
+    if cpj:
+        st.caption("Costo por job: " + ", ".join(f"{k} ${v:.4f}" for k, v in cpj.items()))
+
+with learn_tab2:
+    if not rules_l:
+        st.info("Sin reglas aprendidas todavía.")
+    for r in rules_l:
+        if r.get("activa"):
+            st.markdown(f"**{r['id']}** — {r['regla']}")
+            st.caption(f"Fuente: {r.get('fuente','')} · aplicada {r.get('veces_aplicada',0)}x"
+                       + (" · ⚠️ error recurrente" if r.get("error_recurrente") else ""))
+
+with learn_tab3:
+    if not disag:
+        st.info("Sin desacuerdos registrados.")
+    for d in reversed(disag[-10:]):
+        st.markdown(f"**{d['job_id']} {d['version']}** — {d['clase']} "
+                    f"({d['evaluacion_muse']} → {d['veredicto_supervisor']})")
+        if d.get("criterio_faltante"):
+            st.caption(f"Criterio: {d['criterio_faltante']}")
+
 # ---------------- auto-refresh suave ----------------
 st.caption("Actualización automática cada ~30s.")
 time.sleep(30)
