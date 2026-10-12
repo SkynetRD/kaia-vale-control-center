@@ -369,14 +369,32 @@ if pending:
 
 # Banner BLOCKED_ON_ELVIN: visible en TODAS las pestañas, arriba del todo.
 # Si Muse está detenido esperando a Elvin, esto es lo primero que se ve.
+# Incluye botones para responder sin salir del Control Center.
 _ms_top = gh_json("progress/muse_status.json") or {}
 if _ms_top.get("status") == "BLOCKED_ON_ELVIN" and _ms_top.get("needs_decision"):
+    _q = _ms_top.get("needs_decision", "")
     st.markdown(f"""<div class="decide-banner" style="border:3px solid #f59e0b">
       <h2>🟡 MUSE NECESITA TU DECISIÓN</h2>
-      <div style="font-size:1.05rem;font-weight:600;color:var(--text)">
-        {_ms_top.get("needs_decision", "")[:300]}</div>
-      <div class="kv-muted">Muse está detenido. No avanza hasta que respondas en el chat.</div>
+      <div style="font-size:1.05rem;font-weight:600;color:var(--text)">{_q[:300]}</div>
       </div>""", unsafe_allow_html=True)
+    _b1, _b2 = st.columns(2)
+    if _b1.button("✅ SÍ, CONTINÚA", key="elvin_yes", type="primary",
+                  use_container_width=True):
+        _ans = {"question": _q,
+                "answer": "yes",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes"):
+            st.success("✅ Respuesta enviada: SÍ. Muse continuará.")
+        else:
+            st.error("No se pudo enviar la respuesta.")
+    if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
+        _ans = {"question": _q,
+                "answer": "no",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no"):
+            st.success("Respuesta enviada: NO. Muse se detendrá.")
+        else:
+            st.error("No se pudo enviar la respuesta.")
 
 def build_events():
     """Eventos reales del job, ordenados. Sin invenciones."""
