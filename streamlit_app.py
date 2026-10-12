@@ -444,6 +444,13 @@ if TAB == "home":
     if stale:
         st.caption("⚠️ Sin heartbeat reciente. La tarea podría estar congelada "
                    "(no se cancela automáticamente).")
+    # Banner prioritario: bloqueado esperando decisión de Elvin
+    if mstatus == "BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
+        st.markdown(f"""<div class="kv-card" style="border:2px solid #f59e0b">
+          <h4>🟡 NECESITO TU DECISIÓN</h4>
+          <div style="font-weight:600">{ms.get("needs_decision")[:300]}</div>
+          <div class="kv-muted">Muse está detenido esperando tu respuesta. No avanza hasta que decidas.</div>
+          </div>""", unsafe_allow_html=True)
 
     # Pipeline MUSE → GENERATION → QC → SUPERVISOR → CORRECTION → READY
     nodes = ["MUSE", "GENERATION", "QC", "SUPERVISOR", "CORRECTION", "READY"]
