@@ -101,6 +101,8 @@ if not jobs:
 job_ids = [j["job_id"] for j in jobs]
 jid = st.selectbox("Job", job_ids)
 job = next(j for j in jobs if j["job_id"] == jid)
+cur = job["versions"][-1]["version"] if job.get("versions") else None
+curinfo = next((x for x in job["versions"] if x["version"] == cur), {}) if cur else {}
 state = gh_json(f"jobs/{jid}/state.json") or {}
 st.subheader(f"{jid} — `{state.get('state', '?')}`")
 if state.get("detail"):
@@ -111,6 +113,37 @@ elif state.get("state") == "ESCALATED_INTERNAL":
     st.info("🔧 Escalación interna: el supervisor tuvo incertidumbre pero el canon la resuelve automáticamente. El loop continúa solo.")
 
 tabs = st.tabs(["Versiones", "Veredicto", "Eventos", "Decidir"])
+
+
+def _send_decision(action: str, note: str, key: str) -> None:
+    """Escribe la decisión en el repo y espera el ACK. Reutilizable."""
+    did = str(uuid.uuid4())
+    dec = {"decision_id": did, "job_id": jid, "version": cur,
+           "action": action, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "note": note.strip()}
+    if gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}"):
+        st.success("Decisión enviada. Esperando ACK del reviewer-loop…")
+        for _ in range(20):  # ~2 min máx
+            time.sleep(6)
+            ack = gh_json(f"decisions/acks/{did}.json")
+            gh_raw.clear()  # limpiar caché para reintentar
+            if ack:
+                if ack["status"] == "accepted":
+                    st.success(f"✅ Aceptada: {ack['reason']}")
+                else:
+                    st.error(f"❌ Rechazada: {ack['reason']}")
+                st.json(ack)
+                break
+        else:
+            st.warning("Sin ACK todavía. Revisa en unos segundos.")
+    else:
+        st.error("No se pudo escribir la decisión en el repo.")
+
+
+def _decision_pending() -> bool:
+    return (curinfo.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
+            and not curinfo.get("decidido"))
+
 
 with tabs[0]:
     for v in job.get("versions", []):
@@ -124,6 +157,21 @@ with tabs[0]:
                     st.image(media)
             meta = gh_json(f"jobs/{jid}/versions/{vn}/meta.json") or {}
             st.json(meta.get("params", {}))
+    # botones rápidos sobre la versión actual
+    if _decision_pending():
+        st.divider()
+        st.markdown(f"**Decidir sobre {cur}:**")
+        qc_note = st.text_input("Instrucciones (solo para pedir cambios)", key=f"qc_note_{jid}_{cur}")
+        b1, b2, b3 = st.columns(3)
+        if b1.button("✅ Aprobar", key=f"qc_ap_{jid}_{cur}"):
+            _send_decision("approve_final", "", f"qc_ap_{jid}_{cur}")
+        if b2.button("❌ Rechazar", key=f"qc_rj_{jid}_{cur}"):
+            _send_decision("reject", "", f"qc_rj_{jid}_{cur}")
+        if b3.button("✏️ Pedir cambios", key=f"qc_rc_{jid}_{cur}"):
+            if not qc_note.strip():
+                st.error("Escribe las instrucciones arriba para pedir cambios.")
+            else:
+                _send_decision("request_changes", qc_note, f"qc_rc_{jid}_{cur}")
 
 with tabs[1]:
     cur = job["versions"][-1]["version"] if job.get("versions") else None
@@ -141,9 +189,7 @@ with tabs[2]:
     st.code("\n".join(ev["lines"][-30:]))
 
 with tabs[3]:
-    cur = job["versions"][-1]["version"] if job.get("versions") else None
-    curinfo = next((x for x in job["versions"] if x["version"] == cur), {})
-    if curinfo.get("veredicto_efectivo") != "READY_FOR_ELVIN_REVIEW" or curinfo.get("decidido"):
+    if not _decision_pending():
         st.info("Este job no está pendiente de tu decisión ahora mismo.")
     else:
         action = st.radio("Decisión", ["approve_final", "reject", "request_changes"])
