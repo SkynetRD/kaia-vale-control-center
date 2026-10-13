@@ -1,14 +1,14 @@
-"""Kaia Vale Control Center — v4 "Neon Studio" (2026-10-12).
+"""KAIA VALE — MISSION CONTROL v5 (2026-10-12).
 
-Rediseño creativo inspirado en apps de generación IA (Higgsfield/PrimeIA):
-- Identidad neón: violeta eléctrico + cian sobre negro profundo
-- Héroe cinematográfico: el render actual como protagonista (base64, overlay)
-- Filmstrip horizontal con scroll-snap (thumbnails base64 en un solo bloque)
-- Anillo de progreso CSS para métricas, glassmorphism, glow
-- Lenguaje de "AI studio": Renders, Queue, Verdict, Model stats
+Workspace de generacion IA. Arquitectura aprobada por Elvin.
 
-SOLO frontend/UX. Sin cambios en reviewer-loop, sync, decisiones ni seguridad.
-Secretos: DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO (Streamlit Secrets).
+Desktop: rail pipeline compacto | LIVE CANVAS ~65% | inspector colapsable.
+Review mode automatico en READY_FOR_ELVIN_REVIEW.
+Mobile: layout propio, asset protagonista, acciones sticky, inspector en expander.
+Analytics solo en Model. Estados LIVE reales. Sin actividad simulada.
+
+Intacto: sync daemon, GitHub inbox, ACK, approve/reject/request_changes,
+auto-refresh, historial, supervisor, backend.
 """
 import base64
 import io
@@ -20,7 +20,7 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Kaia Vale · Studio", layout="wide",
+st.set_page_config(page_title="Kaia Vale · Mission Control", layout="wide",
                    initial_sidebar_state="collapsed")
 
 try:
@@ -28,253 +28,150 @@ try:
     TOKEN = st.secrets["GITHUB_TOKEN"]
     REPO = st.secrets["SYNC_REPO"]
 except Exception:
-    st.error("Faltan secretos: DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO en Settings → Secrets.")
+    st.error("Faltan secretos: DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO en Settings -> Secrets.")
     st.stop()
 
 API = f"https://api.github.com/repos/{REPO}/contents"
 H = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.raw"}
 
-if "tab" not in st.session_state:
-    st.session_state.tab = "studio"
-if "sel_ver" not in st.session_state:
-    st.session_state.sel_ver = None
+for k, v in [("tab", "studio"), ("sel_ver", None), ("insp_open", True),
+             ("pipe_sel", None), ("cmp", None), ("focus", False)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 TAB = st.session_state.tab
-if TAB not in ("studio", "renders", "queue", "model"):
-    TAB = "studio"
-    st.session_state.tab = "studio"
+if TAB not in ("studio", "queue", "model"):
+    TAB = "studio"; st.session_state.tab = "studio"
 
-# ---------------- CSS: Neon Studio ----------------
 st.markdown("""<style>
-:root{
-  --bg:#050508; --surface:rgba(20,22,34,.72); --surface2:rgba(28,32,48,.72);
-  --border:rgba(139,92,246,.16); --border2:rgba(139,92,246,.32);
-  --text:#f2f3fa; --muted:#9aa0b8; --faint:#5d6379;
-  --violet:#8b5cf6; --violet2:#c4b5fd; --cyan:#22d3ee; --cyan2:#a5f3fc;
-  --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#6aa8ff;
-  --grad:linear-gradient(120deg,#8b5cf6,#22d3ee);
-}
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;}
+:root{--bg:#0a0a10;--s1:#101018;--s2:#17171f;--tx:#f0f1f6;--mu:#9aa0b8;--ft:#62687e;
+--vi:#8b5cf6;--cy:#22d3ee;--grn:#4ade80;--red:#f87171;--amb:#fbbf24;}
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--tx);
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
 [data-testid="stHeader"],#MainMenu,footer{visibility:hidden;display:none;}
-.block-container{padding-top:.4rem;padding-bottom:9rem;max-width:1280px;}
-h1,h2,h3{color:var(--text)!important;letter-spacing:-.02em;}
-.stCaption,small{color:var(--muted)!important;}
-
-/* fondo ambiental */
-[data-testid="stAppViewContainer"]:before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
-  background:
-    radial-gradient(700px 340px at 12% -4%,rgba(139,92,246,.14),transparent 60%),
-    radial-gradient(640px 320px at 88% 6%,rgba(34,211,238,.1),transparent 60%),
-    radial-gradient(900px 500px at 50% 110%,rgba(139,92,246,.08),transparent 60%);}
-
-/* ===== top bar ===== */
+.block-container{padding:.5rem .9rem 2rem;max-width:1700px;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+@keyframes pulseDot{0%,100%{opacity:.5;}50%{opacity:1;}}
+.fade{animation:fadeUp .3s ease both;}
 .topbar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:10px;
-  padding:10px 2px;margin:-.4rem -1rem .9rem;
-  background:rgba(5,5,8,.82);backdrop-filter:blur(16px);
-  border-bottom:1px solid var(--border);}
-.topbar .logo{font-weight:900;font-size:1.02rem;letter-spacing:.08em;
-  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
-.topbar .spacer{flex:1;}
-.orb{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
-  font-size:.74rem;font-weight:800;letter-spacing:.06em;
-  background:var(--surface2);border:1px solid var(--border2);backdrop-filter:blur(8px);}
-.orb .d{width:9px;height:9px;border-radius:50%;}
-.orb.g{color:var(--green);} .orb.g .d{background:var(--green);box-shadow:0 0 12px var(--green);animation:bl 1.8s infinite;}
-.orb.a{color:var(--amber);} .orb.a .d{background:var(--amber);box-shadow:0 0 12px var(--amber);animation:bl 1.8s infinite;}
-.orb.b{color:var(--cyan);} .orb.b .d{background:var(--cyan);box-shadow:0 0 12px var(--cyan);animation:bl 1.8s infinite;}
-.orb.gr{color:var(--muted);} .orb.gr .d{background:var(--muted);}
-.orb.r{color:var(--red);} .orb.r .d{background:var(--red);box-shadow:0 0 12px var(--red);}
-@keyframes bl{0%,100%{opacity:.55;transform:scale(.88);}50%{opacity:1;transform:scale(1.12);}}
-
-/* ===== héroe cinematográfico ===== */
-.hero{position:relative;border-radius:22px;overflow:hidden;margin-bottom:14px;
-  border:1px solid var(--border2);background:#0a0a12;
-  box-shadow:0 24px 70px -18px rgba(139,92,246,.35);}
-.hero img{display:block;width:100%;max-height:58vh;object-fit:cover;object-position:center 22%;}
-.hero .shade{position:absolute;inset:0;
-  background:linear-gradient(180deg,rgba(5,5,8,.25) 0%,transparent 32%,transparent 52%,rgba(5,5,8,.92) 100%);}
-.hero .cap{position:absolute;left:0;right:0;bottom:0;padding:18px;}
-.hero .cap .v{font-size:1.5rem;font-weight:900;letter-spacing:-.02em;}
-.hero .cap .row{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;}
-.vbadge{display:inline-flex;align-items:center;padding:6px 14px;border-radius:999px;
-  font-size:.74rem;font-weight:800;letter-spacing:.06em;backdrop-filter:blur(8px);
-  border:1px solid var(--border2);background:rgba(10,10,18,.55);}
-.vbadge.gold{color:#f0c76a;border-color:rgba(240,199,106,.5);}
-.vbadge.green{color:var(--green);border-color:rgba(74,222,128,.5);}
-.vbadge.red{color:var(--red);border-color:rgba(248,113,113,.5);}
-.vbadge.blue{color:var(--cyan);border-color:rgba(34,211,238,.5);}
-.vbadge.gray{color:var(--muted);}
-.hero .meta-line{color:var(--muted);font-size:.8rem;margin-top:6px;}
-
-/* ===== filmstrip ===== */
-.fstrip{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 12px;
-  scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;}
-.fstrip::-webkit-scrollbar{height:6px;}
-.fstrip::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
-.fitem{flex:0 0 auto;scroll-snap-align:start;width:118px;cursor:pointer;}
-.fitem img{width:118px;height:158px;object-fit:cover;border-radius:12px;display:block;
-  border:2px solid transparent;transition:border-color .15s ease,transform .15s ease;}
-.fitem:hover img{transform:translateY(-2px);}
-.fitem.sel img{border-color:var(--violet);box-shadow:0 0 16px rgba(139,92,246,.5);}
-.fitem .fv{font-size:.68rem;font-weight:800;margin-top:5px;text-align:center;color:var(--muted);}
-.fitem.sel .fv{color:var(--violet2);}
-.sect{font-size:.78rem;font-weight:800;letter-spacing:.12em;color:var(--muted);
-  margin:18px 0 8px;text-transform:uppercase;}
-
-/* ===== glass cards ===== */
-.gcard{background:var(--surface);border:1px solid var(--border);border-radius:18px;
-  padding:16px;margin-bottom:12px;backdrop-filter:blur(12px);}
-.gcard h4{margin:0 0 10px;font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);}
-.kv-big{font-size:1.7rem;font-weight:900;letter-spacing:-.02em;
-  background:linear-gradient(180deg,#fff,#c9cede);-webkit-background-clip:text;background-clip:text;color:transparent;}
-.kv-muted{color:var(--muted);font-size:.84rem;}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
-@media(max-width:640px){.grid3{grid-template-columns:1fr 1fr;}.kv-big{font-size:1.35rem;}}
-
-/* ===== anillo de progreso ===== */
-.ring{--p:50;--c:var(--violet);width:92px;height:92px;border-radius:50%;flex:0 0 auto;
-  background:conic-gradient(var(--c) calc(var(--p)*1%),rgba(255,255,255,.08) 0);
-  display:flex;align-items:center;justify-content:center;position:relative;}
-.ring:before{content:"";position:absolute;inset:9px;border-radius:50%;background:#0b0b13;}
-.ring span{position:relative;font-weight:900;font-size:1.05rem;}
-.ringwrap{display:flex;align-items:center;gap:14px;}
-
-/* ===== queue stepper ===== */
-.qstep{display:flex;gap:12px;align-items:flex-start;padding:11px 2px;position:relative;}
-.qstep .n{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:.75rem;font-weight:800;background:var(--surface2);border:1px solid var(--border2);color:var(--muted);z-index:1;}
-.qstep:before{content:"";position:absolute;left:16px;top:44px;bottom:-6px;width:2px;background:var(--border);}
-.qstep:last-child:before{display:none;}
-.qstep.on .n{background:var(--grad);color:#0a0618;border:none;box-shadow:0 0 18px rgba(139,92,246,.6);}
-.qstep.done .n{border-color:var(--green);color:var(--green);}
-.qstep .t{font-weight:800;font-size:.92rem;}
-.qstep .s{font-size:.78rem;color:var(--muted);}
-.qstep.on .t{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
-
-/* ===== verdict panel ===== */
-.verdict{position:relative;overflow:hidden;border-radius:22px;padding:22px;margin:16px 0;
-  border:1px solid rgba(240,199,106,.45);
-  background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(34,211,238,.07) 60%,rgba(240,199,106,.1));}
-.verdict:before{content:"";position:absolute;inset:0;pointer-events:none;
-  background:radial-gradient(420px 160px at 50% -20%,rgba(240,199,106,.22),transparent 65%);}
-.verdict h3{margin:0 0 4px;font-size:1.25rem;text-align:center;}
-.verdict .sub{text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:14px;}
-
-/* ===== timeline ===== */
-.tl{position:relative;padding-left:20px;}
-.tl:before{content:"";position:absolute;left:6px;top:8px;bottom:8px;width:2px;
-  background:linear-gradient(180deg,var(--violet),var(--cyan));opacity:.35;}
-.tl-ev{position:relative;padding:8px 0 8px 6px;}
-.tl-ev:before{content:"";position:absolute;left:-18px;top:14px;width:9px;height:9px;border-radius:50%;
-  background:#0b0b13;border:2px solid var(--muted);}
-.tl-ev.g:before{border-color:var(--green);box-shadow:0 0 8px rgba(74,222,128,.6);}
-.tl-ev.a:before{border-color:var(--amber);}
-.tl-ev.r:before{border-color:var(--red);}
-.tl-ev.b:before{border-color:var(--cyan);}
-.tl-time{font-size:.7rem;color:var(--faint);font-variant-numeric:tabular-nums;}
-.tl-txt{font-size:.88rem;}
-.spec{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}
-.spec .k{font-size:.66rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);}
-.spec .v{font-weight:800;font-size:.92rem;margin-top:2px;}
-
-/* ===== nav ===== */
-.mnav{display:none;}
-@media(max-width:767px){
-  .mnav{display:flex;position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:950;
-    background:rgba(14,16,26,.92);backdrop-filter:blur(18px);
-    border:1px solid var(--border2);border-radius:22px;padding:6px;
-    box-shadow:0 12px 40px rgba(0,0,0,.5);}
-  .mnav button{flex:1;background:none!important;border:none!important;color:var(--muted);
-    font-size:.6rem;font-weight:800;display:flex;flex-direction:column;align-items:center;gap:2px;
-    padding:9px 0;border-radius:16px;min-height:0;}
-  .mnav button .ic{font-size:1.3rem;line-height:1;}
-  .mnav button[kind="primary"]{background:var(--grad)!important;color:#0a0618!important;}
-  .dnav{display:none;}
-}
-@media(min-width:768px){
-  .dnav{display:flex;gap:8px;margin-bottom:16px;}
-  .dnav button{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
-    border-radius:999px;padding:10px 22px;font-weight:800;font-size:.85rem;}
-  .dnav button[kind="primary"]{background:var(--grad);color:#0a0618;border:none;
-    box-shadow:0 6px 24px rgba(139,92,246,.4);}
-}
-
-/* ===== botones ===== */
-.stButton>button{background:var(--surface2);color:var(--text);border:1px solid var(--border2);
-  border-radius:16px;min-height:54px;font-weight:800;font-size:.95rem;width:100%;}
-.stButton>button:hover{border-color:var(--violet);color:var(--violet2);}
+padding:8px 2px;margin:-.5rem -.9rem .6rem;background:rgba(10,10,16,.92);
+backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,.06);}
+.topbar .logo{font-weight:900;font-size:.92rem;letter-spacing:.1em;white-space:nowrap;}
+.topbar .logo em{font-style:normal;background:linear-gradient(120deg,var(--vi),var(--cy));
+-webkit-background-clip:text;background-clip:text;color:transparent;}
+.topbar .sp{flex:1;}
+.livedot{width:8px;height:8px;border-radius:50%;background:var(--grn);
+box-shadow:0 0 10px var(--grn);animation:pulseDot 1.8s infinite;display:inline-block;}
+.statuspill{display:inline-flex;align-items:center;gap:8px;font-size:.78rem;font-weight:700;
+padding:6px 13px;border-radius:999px;background:var(--s2);white-space:nowrap;}
+.topmeta{font-size:.78rem;color:var(--mu);white-space:nowrap;}
+.railbtn .stButton>button{width:52px;height:54px;border-radius:14px;font-size:1.05rem;
+background:var(--s1);border:1px solid rgba(255,255,255,.08);color:var(--mu);padding:0;}
+.railbtn .stButton>button[kind="primary"]{background:rgba(139,92,246,.18);color:#fff;
+border-color:var(--vi);box-shadow:0 0 12px rgba(139,92,246,.35);}
+.rdetail{font-size:.76rem;color:var(--mu);background:var(--s1);border-radius:12px;
+padding:10px 12px;line-height:1.55;margin-top:4px;}
+.rdetail b{color:var(--tx);}
+.stagebox{background:#07070c;border-radius:16px;padding:10px;display:flex;
+align-items:center;justify-content:center;min-height:46vh;}
+.stagebox img{max-height:68vh;object-fit:contain;border-radius:10px;animation:fadeUp .35s ease;}
+.cbar{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;}
+.cbadge{background:var(--s2);border-radius:999px;padding:5px 12px;font-size:.74rem;font-weight:800;}
+.cbadge.gold{color:#f0c76a;}.cbadge.green{color:var(--grn);}.cbadge.red{color:var(--red);}
+.cbadge.blue{color:var(--cy);}.cbadge.gray{color:var(--mu);}
+.fstrip{display:flex;gap:8px;overflow-x:auto;padding:8px 2px;}
+.fstrip img{width:60px;height:80px;object-fit:cover;border-radius:8px;flex:0 0 auto;
+opacity:.5;border:2px solid transparent;}
+.fstrip img.sel{opacity:1;border-color:var(--vi);}
+.insp{background:var(--s1);border-radius:14px;padding:13px;}
+.insp h5{font-size:.66rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);margin:0 0 8px;}
+.insp .vname{font-size:1.12rem;font-weight:800;}
+.qcrow{display:flex;justify-content:space-between;font-size:.83rem;padding:6px 9px;
+background:var(--s2);border-radius:9px;margin-bottom:6px;}
+.ok{color:var(--grn);}.bad{color:var(--red);}.wrn{color:var(--amb);}
+.find{font-size:.79rem;color:var(--mu);padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05);line-height:1.45;}
+.spec2{display:grid;grid-template-columns:1fr 1fr;gap:7px;font-size:.79rem;margin-top:6px;}
+.spec2 .k{color:var(--ft);font-size:.62rem;text-transform:uppercase;letter-spacing:.05em;}
+.spec2 .v{font-weight:700;}
+.livebar{display:flex;align-items:center;gap:10px;margin-top:8px;padding:8px 13px;
+background:var(--s1);border-radius:11px;font-size:.81rem;color:var(--mu);}
+.livebar b{color:var(--tx);}
+.rvhead{text-align:center;padding:6px 0 2px;}
+.rvhead h3{margin:0;font-size:1.15rem;}
+.rvhead p{color:var(--mu);font-size:.84rem;margin:2px 0 0;}
+.stButton>button{background:var(--s2);color:var(--tx);border:1px solid rgba(255,255,255,.1);
+border-radius:12px;min-height:48px;font-weight:700;font-size:.88rem;width:100%;}
+.stButton>button:hover{border-color:var(--vi);}
 .stButton>button:active{transform:scale(.98);}
-.stButton>button[kind="primary"]{background:var(--grad);color:#0a0618;border:none;
-  box-shadow:0 8px 28px rgba(139,92,246,.45);}
-.stButton>button[kind="primary"]:hover{filter:brightness(1.1);color:#0a0618;}
-.stTextInput>div>div>input{background:var(--surface2);color:var(--text);
-  border:1px solid var(--border2);border-radius:14px;font-size:.95rem;}
-.stExpander{border:1px solid var(--border);border-radius:16px;background:var(--surface);}
-.stExpander summary{color:var(--text);font-weight:700;}
-[data-testid="stImage"] img{border-radius:16px;}
-code{color:var(--violet2)!important;font-size:.8em;}
-.login-wrap{max-width:380px;margin:10vh auto;padding:34px 30px;background:var(--surface);
-  border:1px solid var(--border2);border-radius:24px;text-align:center;}
-.login-wrap h1{font-size:1.35rem;margin-bottom:4px;background:var(--grad);
-  -webkit-background-clip:text;background-clip:text;color:transparent;}
+.stButton>button[kind="primary"]{background:linear-gradient(120deg,var(--vi),#6d3ff5);color:#fff;border:none;}
+.stTextInput>div>div>input{background:var(--s2);color:var(--tx);
+border:1px solid rgba(255,255,255,.1);border-radius:11px;}
+.stExpander{border:1px solid rgba(255,255,255,.08);border-radius:13px;background:var(--s1);}
+[data-testid="stImage"] img{border-radius:12px;}
+code{color:#c4b5fd!important;}
+.only-m{display:none!important;}
+@media(max-width:767px){
+.only-d{display:none!important;}.only-m{display:block!important;}
+.block-container{padding:.4rem .5rem 7rem;}
+.m-canvas img{width:100%;border-radius:14px;max-height:60vh;object-fit:cover;animation:fadeUp .35s ease;}
+.m-strip{display:flex;gap:7px;overflow-x:auto;padding:9px 2px;}
+.m-strip img{width:54px;height:72px;object-fit:cover;border-radius:8px;flex:0 0 auto;opacity:.5;border:2px solid transparent;}
+.m-strip img.sel{opacity:1;border-color:var(--vi);}
+.m-anchor + div[data-testid="stVerticalBlock"]{position:sticky;bottom:0;z-index:900;
+background:rgba(10,10,16,.95);backdrop-filter:blur(14px);margin:0 -.5rem;
+padding:9px .5rem calc(9px + env(safe-area-inset-bottom));border-top:1px solid rgba(255,255,255,.08);}
+.m-anchor + div[data-testid="stVerticalBlock"] .stButton>button{min-height:54px;font-size:.95rem;}
+.mnav{position:fixed;left:10px;right:10px;bottom:calc(8px + env(safe-area-inset-bottom));z-index:940;
+display:flex;background:rgba(18,18,28,.93);backdrop-filter:blur(16px);
+border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:5px;}
+.mnav button{flex:1;background:none!important;border:none!important;color:var(--mu);
+font-size:.58rem;font-weight:800;padding:8px 0;border-radius:13px;min-height:0;}
+.mnav button[kind="primary"]{background:rgba(139,92,246,.22)!important;color:#d6c9ff!important;}
+}
+@media(min-width:768px){.dnav{display:flex;gap:2px;}
+.dnav button{background:none;border:none;color:var(--mu);border-radius:9px;padding:7px 13px;font-weight:700;font-size:.8rem;}
+.dnav button[kind="primary"]{background:var(--s2);color:var(--tx);}}
+.login-wrap{max-width:340px;margin:12vh auto;padding:28px;background:var(--s1);border-radius:18px;text-align:center;}
 </style>""", unsafe_allow_html=True)
 
-# ---------------- github helpers ----------------
+# ---------------- github ----------------
 @st.cache_data(ttl=20)
-def gh_raw(path: str) -> bytes | None:
+def gh_raw(path):
     r = requests.get(f"{API}/{path}?ref=main", headers=H, timeout=20)
     return r.content if r.status_code == 200 else None
 
-
-@st.cache_data(ttl=20)
-def gh_status(path: str) -> int:
-    try:
-        r = requests.get(f"{API}/{path}?ref=main", headers=H, timeout=20)
-        return r.status_code
-    except Exception:
-        return -1
-
-
-def gh_json(path: str):
+def gh_json(path):
     b = gh_raw(path)
     return json.loads(b.decode()) if b else None
 
-
-def gh_put_json(path: str, obj: dict, msg: str) -> tuple[bool, str]:
+def gh_put_json(path, obj, msg):
     content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=1).encode()).decode()
     body = {"message": msg, "content": content}
     try:
-        existing = gh_json_raw(path)
-        if existing and existing.get("sha"):
-            body["sha"] = existing["sha"]
+        ex = gh_json_raw(path)
+        if ex and ex.get("sha"):
+            body["sha"] = ex["sha"]
     except Exception:
         pass
     try:
         r = requests.put(f"{API}/{path}", headers={**H, "Accept": "application/vnd.github+json"},
                          json=body, timeout=20)
     except Exception as e:
-        return (False, f"sin conexión: {e.__class__.__name__}")
+        return (False, f"sin conexion: {e.__class__.__name__}")
     if r.status_code in (200, 201):
-        return (True, f"HTTP {r.status_code}")
+        return (True, "ok")
     try:
-        detail = r.json().get("message", "")[:160]
+        detail = r.json().get("message", "")[:140]
     except Exception:
-        detail = r.text[:160]
-    hint = {401: "token inválido o expirado — revisar GITHUB_TOKEN en Secrets",
-            403: "token sin permiso de escritura — necesita 'Contents: write'",
-            404: "repo o ruta no encontrada — revisar SYNC_REPO"}.get(r.status_code, "")
-    return (False, f"GitHub HTTP {r.status_code}: {detail} {hint}".strip())
+        detail = r.text[:140]
+    hint = {401: "token invalido", 403: "token sin escritura", 404: "repo/ruta mal"}.get(r.status_code, "")
+    return (False, f"HTTP {r.status_code}: {detail} {hint}".strip())
 
-
-def gh_json_raw(path: str):
+def gh_json_raw(path):
     r = requests.get(f"{API}/{path}", headers=H, timeout=20)
     return r.json() if r.status_code == 200 else None
 
-
-# Thumbnails base64 (un solo bloque HTML = filmstrip real)
 @st.cache_data(ttl=120)
-def thumb_b64(path: str, w: int = 236) -> str | None:
+def thumb_b64(path, w=120):
     try:
         from PIL import Image
         b = gh_raw(path)
@@ -282,59 +179,35 @@ def thumb_b64(path: str, w: int = 236) -> str | None:
             return None
         im = Image.open(io.BytesIO(b)).convert("RGB")
         im.thumbnail((w, w * 2), Image.LANCZOS)
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=68)
+        buf = io.BytesIO(); im.save(buf, "JPEG", quality=60)
         return base64.b64encode(buf.getvalue()).decode()
     except Exception:
         return None
-
-
-@st.cache_data(ttl=120)
-def hero_b64(path: str, w: int = 900) -> str | None:
-    try:
-        from PIL import Image
-        b = gh_raw(path)
-        if not b:
-            return None
-        im = Image.open(io.BytesIO(b)).convert("RGB")
-        im.thumbnail((w, w * 2), Image.LANCZOS)
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=74)
-        return base64.b64encode(buf.getvalue()).decode()
-    except Exception:
-        return None
-
 
 # ---------------- auth ----------------
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if not st.session_state.auth:
-    st.markdown('<div class="login-wrap"><h1>◈ KAIA VALE</h1>'
-                '<p class="kv-muted">Neon Studio</p>', unsafe_allow_html=True)
+    st.markdown('<div class="login-wrap"><h1>KAIA VALE</h1><p style="color:var(--mu)">Mission Control</p></div>',
+                unsafe_allow_html=True)
     with st.form("login"):
-        pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                           placeholder="Password")
-        submitted = st.form_submit_button("Entrar")
+        pw = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
+        go = st.form_submit_button("Entrar")
     st.markdown('</div>', unsafe_allow_html=True)
-    if submitted:
+    if go:
         if pw == PASSWORD:
-            st.session_state.auth = True
-            st.rerun()
+            st.session_state.auth = True; st.rerun()
         else:
             st.error("Password incorrecto.")
     st.stop()
 
 # ---------------- datos ----------------
 snap = gh_json("snapshot.json") or {"jobs": []}
-agent = gh_json("agent.json") or {}
 budget = gh_json("budget.json") or {}
 jobs = snap.get("jobs", [])
 if not jobs:
-    st.markdown('<div class="gcard">Sin jobs sincronizados todavía.</div>', unsafe_allow_html=True)
-    code = gh_status("snapshot.json")
-    st.warning(f"GitHub API: HTTP {code} — 401=token inválido, 404=repo mal, -1=sin conexión.")
+    st.info("Sin jobs sincronizados.")
     st.stop()
-
 job_ids = [j["job_id"] for j in jobs]
 jid = job_ids[0] if len(job_ids) == 1 else st.selectbox("Job", job_ids)
 job = next(j for j in jobs if j["job_id"] == jid)
@@ -345,365 +218,412 @@ if not st.session_state.sel_ver or not any(v["version"] == st.session_state.sel_
 sel = st.session_state.sel_ver
 state = gh_json(f"jobs/{jid}/state.json") or {}
 metrics = gh_json("learning/metrics.json") or {}
-phase = gh_json("learning/phase.json") or {}
 rules_l = gh_json("learning/rules.json") or []
 disag = gh_json("learning/disagreements.json") or []
 ms = gh_json("progress/muse_status.json") or {}
 
+def is_pending():
+    ci = next((x for x in versions if x["version"] == cur), {})
+    return ci.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not ci.get("decidido")
 
-def _decision_pending() -> bool:
-    curinfo = next((x for x in versions if x["version"] == cur), {})
-    return (curinfo.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
-            and not curinfo.get("decidido"))
-
-
-def hours_since(iso) -> float:
+def hsince(iso):
     try:
         from datetime import timezone
         dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
     except Exception:
         return 999.0
 
+def hace(h):
+    if h >= 999: return "?"
+    m = int(h * 60)
+    if m < 1: return "ahora"
+    if m < 60: return f"{m} min"
+    if h < 24: return f"{int(h)} h"
+    return f"{int(h/24)} d"
 
-def hace_str(h: float) -> str:
-    if h >= 999:
-        return "fecha desconocida"
-    if h < 1:
-        m = int(h * 60)
-        return f"hace {m} min" if m > 0 else "ahora mismo"
-    if h < 24:
-        return f"hace {int(h)} h"
-    return f"hace {int(h / 24)} d"
+AGE = hsince(state.get("updated"))
+LIVE = AGE < 0.25
+PEND = is_pending()
 
+def live_state():
+    s = state.get("state", ""); mst = ms.get("status", "")
+    if PEND or s == "ELVIN_DECISION_REQUIRED" or mst == "BLOCKED_ON_ELVIN":
+        return "Waiting for Elvin"
+    if not LIVE: return "Idle"
+    if s == "GENERATING": return "Generating"
+    if mst in ("VALIDATING", "CORRECTING"): return "Muse QC"
+    if mst == "SUPERVISOR_REVIEW" or s == "REVIEWING": return "Supervisor reviewing"
+    if mst == "WORKING": return "Working"
+    if mst == "WAITING_ON_TOOL": return "Waiting: " + str(ms.get("waiting_on") or "")
+    return "Idle"
 
-def fmt_ts(iso):
-    try:
-        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
-        return dt.strftime("%H:%M")
-    except Exception:
-        return "—"
+LIVE_LBL = live_state()
+MSTEP = ms.get("current_step") or ""
 
-
-STATE_AGE_H = hours_since(state.get("updated"))
-IS_LIVE = STATE_AGE_H < 0.25
-
-
-def gstatus():
-    s = state.get("state", "")
-    if s == "APPROVED":
-        return ("APPROVED", "g", True)
-    if _decision_pending() or s == "ELVIN_DECISION_REQUIRED":
-        return ("VEREDICTO PENDIENTE", "a", True)
-    if not IS_LIVE:
-        return ("EN ESPERA", "gr", False)
-    if s in ("GENERATING", "CORRECTING"):
-        return ("GENERANDO", "g", True)
-    if s in ("REVIEWING", "VALIDATING", "ESCALATED_INTERNAL"):
-        return ("REVISANDO", "b", True)
-    return ("EN ESPERA", "gr", False)
-
-
-def send_decision(action: str, note: str) -> None:
+def send_decision(action, note=""):
     did = str(uuid.uuid4())
-    dec = {"decision_id": did, "job_id": jid, "version": cur,
-           "action": action, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-           "note": note.strip()}
+    dec = {"decision_id": did, "job_id": jid, "version": cur, "action": action,
+           "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "note": note.strip()}
     ok, detail = gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}")
-    if ok:
-        st.success("✅ Decisión enviada. El ACK aparecerá aquí en ~1 min.")
-    else:
-        st.error(f"No se pudo enviar. {detail}")
+    st.success("Decision enviada. ACK en ~1 min.") if ok else st.error(f"No se pudo enviar. {detail}")
 
+def apath(vn):
+    if gh_raw(f"jobs/{jid}/versions/{vn}/asset.mp4"): return ("video", f"jobs/{jid}/versions/{vn}/asset.mp4")
+    if gh_raw(f"jobs/{jid}/versions/{vn}/asset.png"): return ("image", f"jobs/{jid}/versions/{vn}/asset.png")
+    return (None, None)
 
-def asset_path(vn):
-    mp4 = gh_raw(f"jobs/{jid}/versions/{vn}/asset.mp4")
-    if mp4:
-        return ("video", f"jobs/{jid}/versions/{vn}/asset.mp4")
-    png = gh_raw(f"jobs/{jid}/versions/{vn}/asset.png")
-    return ("image", f"jobs/{jid}/versions/{vn}/asset.png") if png else (None, None)
+def vcls(v):
+    return {"READY_FOR_ELVIN_REVIEW": "gold", "CORREGIR": "red", "ESCALAR": "red",
+            "APROBADO": "green", "ESCALATED_INTERNAL": "blue"}.get(v, "gray")
+def vlab(v):
+    return {"READY_FOR_ELVIN_REVIEW": "READY", "CORREGIR": "CORREGIR", "ESCALAR": "ESCALAR",
+            "APROBADO": "APROBADA", "ESCALATED_INTERNAL": "EN REVISION"}.get(v, v or "--")
 
+def pipe_stages():
+    ci = next((x for x in versions if x["version"] == cur), {})
+    ve = ci.get("veredicto_efectivo", "")
+    vd = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {} if cur else {}
+    s = state.get("state", "")
+    has_v = bool(versions)
+    return [
+        ("brief", "◈", "Brief", has_v and s != "GENERATING",
+         f"<b>Concepto</b><br>{jid}<br>{len(versions)} versiones"),
+        ("gen", "⬢", "Generate", has_v,
+         f"<b>Modelo</b><br>krea 2<br>{len(versions)} renders"),
+        ("qc", "◐", "Muse QC", bool(vd),
+         f"<b>Hallazgos:</b> {len(vd.get('hallazgos', []))}<br><b>Conf:</b> {vd.get('confianza', '--')}"),
+        ("sup", "⬣", "Supervisor", ve in ("CORREGIR", "READY_FOR_ELVIN_REVIEW", "APROBADO"),
+         f"<b>Veredicto:</b> {vlab(ve)}<br><b>Costo:</b> ${metrics.get('costo_supervisor_total_usd', 0):.4f}"),
+        ("elvin", "◉", "Elvin", PEND or bool(ci.get("decidido")),
+         "<b>Tu decision pendiente</b>" if PEND else f"<b>Decision:</b> {vlab(ve)}"),
+        ("pub", "➤", "Publish", s == "APPROVED",
+         "<b>Estado:</b> " + ("publicado" if s == "APPROVED" else "pendiente")),
+    ]
 
-def vbadge(v):
-    m = {"READY_FOR_ELVIN_REVIEW": ("LISTA PARA TI", "gold"),
-         "CORREGIR": ("CORREGIR", "red"), "ESCALAR": ("ESCALAR", "red"),
-         "APROBADO": ("APROBADA", "green"), "ESCALATED_INTERNAL": ("EN REVISIÓN", "blue")}
-    t, c = m.get(v, (v or "—", "gray"))
-    return f'<span class="vbadge {c}">{t}</span>'
-
-
-def build_events():
+def evts():
     evs = []
     for v in versions:
         m = gh_json(f"jobs/{jid}/versions/{v['version']}/meta.json") or {}
-        if m.get("registered"):
-            evs.append((m["registered"], "g", f"◈ {v['version']} renderizada"))
+        if m.get("registered"): evs.append((m["registered"], f"{v['version']} renderizada"))
     for d in disag:
         if d.get("job_id") == jid and d.get("ts"):
-            cl = d.get("clase", "")
-            txt = {"missed_by_muse": f"QA marcó CORREGIR en {d.get('version')}",
-                   "acuerdo": f"QA aprobó {d.get('version')}",
-                   "supervisor_false_positive": f"QA marcó · Muse discrepa ({d.get('version')})",
-                   "human_caught_miss": f"Elvin detectó fallo en {d.get('version')}",
-                   "human_calibration_positive": f"Elvin aprobó {d.get('version')}",
-                   "user_overrule": f"Elvin decidió sobre {d.get('version')}"}.get(cl, f"{cl}")
-            kc = "r" if cl in ("missed_by_muse", "human_caught_miss") else ("g" if cl == "acuerdo" else "a")
-            evs.append((d["ts"], kc, txt))
+            evs.append((d["ts"], f"QA {d.get('clase', '')} {d.get('version', '')}"))
     evs.sort(key=lambda x: x[0])
     return evs
 
-
-pending = _decision_pending()
-glabel, gcls, gactive = gstatus()
-
 # ---------------- top bar ----------------
-st.markdown(f"""<div class="topbar">
-  <div class="logo">◈ KAIA VALE</div>
-  <div class="spacer"></div>
-  <span class="orb {gcls}"><span class="d"></span>{glabel}</span>
-  </div>""", unsafe_allow_html=True)
+st.markdown('<div class="topbar"><div class="logo"><em>◈ KAIA VALE</em></div><div class="dnav only-d">',
+            unsafe_allow_html=True)
+_dc = st.columns(3)
+for i, (t, label) in enumerate([("studio", "Studio"), ("queue", "Queue"), ("model", "Model")]):
+    if _dc[i].button(label, key=f"dnav_{t}", type="primary" if TAB == t else "secondary"):
+        st.session_state.tab = t; st.session_state.cmp = None; st.session_state.focus = False; st.rerun()
+st.markdown('</div><div class="sp"></div>', unsafe_allow_html=True)
+st.markdown(f"""<span class="statuspill"><span class="livedot"></span>{LIVE_LBL}""" +
+            (f""" <span style="color:var(--mu);font-weight:600">· {MSTEP[:38]}</span>""" if MSTEP and LIVE else "") +
+            """</span><span class="topmeta only-d">QA $""" +
+            f"{budget.get('monthly_used_usd', 0):.2f}</span></div>", unsafe_allow_html=True)
+st.markdown('<div class="mnav only-m">', unsafe_allow_html=True)
+_mc = st.columns(3)
+for i, (t, label) in enumerate([("studio", "Studio"), ("queue", "Queue"), ("model", "Model")]):
+    if _mc[i].button(label, key=f"mnav_{t}", type="primary" if TAB == t else "secondary"):
+        st.session_state.tab = t; st.session_state.cmp = None; st.session_state.focus = False; st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
-# Banner decisión de Muse (SÍ/NO)
+# Banner SÍ/NO de Muse
 if ms.get("status") == "BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
     _q = ms.get("needs_decision", "")
-    st.markdown(f"""<div class="gcard" style="border-color:rgba(251,191,36,.45)">
-      <h4 style="color:var(--amber)">⚠ Muse necesita tu decisión</h4>
-      <div style="font-weight:700">{_q[:280]}</div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="insp" style="border:1px solid rgba(251,191,36,.4);margin-bottom:8px">
+      <h5 style="color:var(--amb)">Muse necesita tu decision</h5>
+      <div style="font-weight:700;margin-bottom:6px">{_q[:240]}</div></div>""", unsafe_allow_html=True)
     _b1, _b2 = st.columns(2)
-    if _b1.button("✅ SÍ", key="elvin_yes", type="primary", use_container_width=True):
+    if _b1.button("SI, CONTINUA", key="elvin_yes", type="primary", use_container_width=True):
         _ok, _d = gh_put_json("progress/elvin_answer.json",
             {"question": _q, "answer": "yes",
              "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, "elvin answer: yes")
-        st.success("✅ Enviada: SÍ.") if _ok else st.error(f"No se pudo enviar. {_d}")
-    if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
+        st.success("Enviada: SI.") if _ok else st.error(f"No se pudo enviar. {_d}")
+    if _b2.button("NO", key="elvin_no", use_container_width=True):
         _ok, _d = gh_put_json("progress/elvin_answer.json",
             {"question": _q, "answer": "no",
              "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, "elvin answer: no")
         st.success("Enviada: NO.") if _ok else st.error(f"No se pudo enviar. {_d}")
 
-# ---------------- nav ----------------
-NAV = [("studio", "◈", "Studio"), ("renders", "▦", "Renders"),
-       ("queue", "≋", "Queue"), ("model", "✦", "Model")]
-st.markdown('<div class="dnav">', unsafe_allow_html=True)
-_dc = st.columns(4)
-for i, (t, ic, label) in enumerate(NAV):
-    if _dc[i].button(f"{ic} {label}", key=f"dnav_{t}", use_container_width=True,
-                      type="primary" if TAB == t else "secondary"):
-        st.session_state.tab = t
-        st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
-st.markdown('<div class="mnav">', unsafe_allow_html=True)
-_mc = st.columns(4)
-for i, (t, ic, label) in enumerate(NAV):
-    if _mc[i].button(f"{ic}\n{label}", key=f"mnav_{t}", use_container_width=True,
-                      type="primary" if TAB == t else "secondary"):
-        st.session_state.tab = t
-        st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
-
-# ================= STUDIO (héroe + filmstrip + queue) =================
+# ================================================================ STUDIO
 if TAB == "studio":
     vinfo = next((x for x in versions if x["version"] == sel), {})
-    mtype, mpath = asset_path(sel)
-    hb = hero_b64(mpath, 900) if mtype == "image" else None
+    mtype, mpath = apath(sel)
     vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
     meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
-    conf = vd.get("confianza", "—")
-    if hb:
-        st.markdown(f"""<div class="hero">
-          <img src="data:image/jpeg;base64,{hb}" alt="{sel}">
-          <div class="shade"></div>
-          <div class="cap"><div class="v">{sel}</div>
-          <div class="row">{vbadge(vinfo.get("veredicto_efectivo"))}
-          <span class="vbadge gray">conf {conf}</span></div>
-          <div class="meta-line">{jid} · {meta.get("params", {}).get("model", "krea 2")} · {hace_str(hours_since(meta.get("registered")))}</div>
-          </div></div>""", unsafe_allow_html=True)
+    cmpv = st.session_state.cmp
+    focus = st.session_state.focus
+
+    # ================= MOBILE =================
+    st.markdown('<div class="only-m">', unsafe_allow_html=True)
+    st.markdown(f"""<div style="display:flex;align-items:center;gap:8px;padding:6px 2px;
+      font-size:.8rem;font-weight:700"><span class="livedot"></span>{LIVE_LBL}
+      <span style="color:var(--ft);margin-left:auto">{sel}</span></div>""", unsafe_allow_html=True)
+    if focus and st.button("< Volver", key="m_unfocus"):
+        st.session_state.focus = False; st.rerun()
+    if cmpv and len(cmpv) == 2:
+        c1, c2 = st.columns(2)
+        for col, vn in zip((c1, c2), cmpv):
+            _, p = apath(vn)
+            with col:
+                st.markdown(f"<div style='text-align:center;font-weight:800;font-size:.8rem'>{vn}</div>",
+                            unsafe_allow_html=True)
+                if p: st.image(gh_raw(p), use_container_width=True)
+        if st.button("Cerrar comparacion", key="m_cmp_off"):
+            st.session_state.cmp = None; st.rerun()
     elif mtype == "image":
+        st.markdown('<div class="m-canvas fade">', unsafe_allow_html=True)
         st.image(gh_raw(mpath), use_container_width=True)
-        st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap">
-          <div class="kv-big" style="font-size:1.3rem">{sel}</div>
-          {vbadge(vinfo.get("veredicto_efectivo"))}</div>""", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
     elif mtype == "video":
         st.video(gh_raw(mpath))
-        st.markdown(f"<div class='kv-big' style='font-size:1.3rem'>{sel}</div>", unsafe_allow_html=True)
     else:
-        st.info("Render aún no sincronizado.")
-
-    # filmstrip
-    st.markdown('<div class="sect">Todos los renders</div><div class="fstrip">', unsafe_allow_html=True)
-    items = []
+        st.info("Render aun no sincronizado.")
+    strip = '<div class="m-strip">'
     for v in reversed(versions):
-        vn = v["version"]
-        _, p = asset_path(vn)
-        t = thumb_b64(p, 236) if p else None
+        vn = v["version"]; _, p = apath(vn)
+        t = thumb_b64(p) if p else None
         if t:
-            items.append(f'<div class="fitem{" sel" if vn == sel else ""}">'
-                         f'<img src="data:image/jpeg;base64,{t}" alt="{vn}">'
-                         f'<div class="fv">{vn}</div></div>')
-    st.markdown("".join(items) + "</div>", unsafe_allow_html=True)
-    st.caption("↑ Vista general · selecciona abajo para ver en grande")
-    # selector (pills nativo si existe)
+            strip += f'<img src="data:image/jpeg;base64,{t}" class="{"sel" if vn == sel else ""}">'
+    st.markdown(strip + "</div>", unsafe_allow_html=True)
     try:
-        pick = st.pills("Seleccionar render", [v["version"] for v in reversed(versions)],
-                        default=sel, key="fpick")
+        mpick = st.pills("v", [v["version"] for v in reversed(versions)],
+                         default=sel, key="mpick", label_visibility="collapsed")
     except Exception:
-        pick = st.selectbox("Seleccionar render", [v["version"] for v in reversed(versions)],
-                            index=[v["version"] for v in reversed(versions)].index(sel), key="fpick2")
-    if pick and pick != sel:
-        st.session_state.sel_ver = pick
-        st.rerun()
-
-    # verdict panel
-    if pending:
-        st.markdown(f"""<div class="verdict"><h3>◈ Veredicto</h3>
-          <div class="sub">{cur} superó QA · tu decisión la publica</div></div>""",
-                    unsafe_allow_html=True)
-        halls = vd.get("hallazgos", []) if sel == cur else (gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}).get("hallazgos", [])
-        if halls:
-            for h in halls[:3]:
-                st.markdown(f"• **{h.get('categoria','')}**: {h.get('descripcion','')[:130]}")
+        mpick = st.selectbox("v", [v["version"] for v in reversed(versions)], key="mpick2",
+                             label_visibility="collapsed")
+    if mpick and mpick != sel:
+        st.session_state.sel_ver = mpick; st.rerun()
+    # sticky actions
+    st.markdown('<div class="m-anchor"></div>', unsafe_allow_html=True)
+    with st.container():
+        if PEND:
+            st.markdown(f"<div style='text-align:center;font-weight:800;margin-bottom:6px'>{cur} · tu decision</div>",
+                        unsafe_allow_html=True)
+            a1, a2 = st.columns(2)
+            if a1.button("APROBAR", key="m_ap", type="primary", use_container_width=True):
+                send_decision("approve_final", "")
+            if a2.button("RECHAZAR", key="m_rj", use_container_width=True):
+                send_decision("reject", "")
+            if st.button("PEDIR CAMBIOS", key="m_rc", use_container_width=True):
+                st.session_state["m_rc_open"] = not st.session_state.get("m_rc_open", False)
+            if st.session_state.get("m_rc_open"):
+                nn = st.text_input("cambios", key="m_note", placeholder="Describe los cambios…",
+                                   label_visibility="collapsed")
+                if st.button("Enviar", key="m_rc_go", type="primary"):
+                    if nn.strip(): send_decision("request_changes", nn)
+                    else: st.error("Escribe los cambios primero.")
         else:
-            st.markdown("<div class='kv-muted'>Sin hallazgos bloqueantes.</div>", unsafe_allow_html=True)
-        with st.expander("✏️ Instrucciones (solo si pides cambios)"):
-            st.text_input("instrucciones", key=f"vc_note_{jid}_{cur}",
-                          label_visibility="collapsed", placeholder="Describe los cambios…")
-        b1, b2, b3 = st.columns(3)
-        if b1.button("✅ APROBAR", key=f"vc_ap_{jid}_{cur}", type="primary", use_container_width=True):
-            send_decision("approve_final", "")
-        if b2.button("🔄 CAMBIOS", key=f"vc_rc_{jid}_{cur}", use_container_width=True):
-            nn = st.session_state.get(f"vc_note_{jid}_{cur}", "")
-            st.error("Escribe las instrucciones primero.") if not nn.strip() else send_decision("request_changes", nn)
-        if b3.button("❌ RECHAZAR", key=f"vc_rj_{jid}_{cur}", use_container_width=True):
-            send_decision("reject", "")
+            b1, b2 = st.columns(2)
+            if b1.button("Comparar", key="m_cmp"):
+                vs = [v["version"] for v in versions]
+                st.session_state.cmp = vs[-2:] if len(vs) >= 2 else None
+                st.rerun()
+            if b2.button("Fullscreen", key="m_fs"):
+                st.session_state.focus = True; st.rerun()
+    with st.expander("Detalles / QC"):
+        halls = vd.get("hallazgos", []); cov = vd.get("visual_coverage") or {}
+        st.markdown(f"**{sel}** · {vlab(vinfo.get('veredicto_efectivo'))}")
+        for cat in ("identity", "anatomy", "skin", "hands"):
+            it = cov.get(cat, {}) if isinstance(cov.get(cat), dict) else {}
+            fl = [k for k, x in it.items() if isinstance(x, dict) and x.get("estado") == "FAIL"]
+            st.markdown(f"{'❌' if fl else '✓'} {cat}")
+        for h in halls[:4]:
+            st.caption(f"• {h.get('categoria')}: {str(h.get('descripcion'))[:110]}")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # queue stepper
-    st.markdown('<div class="sect">Queue</div>', unsafe_allow_html=True)
-    nodes = [("Muse", "brief + concepto"), ("Generar", "krea 2"), ("QC", "validación local"),
-             ("QA", "supervisor"), ("Fix", "corrección"), ("Verdicto", "Elvin")]
-    active_idx = {"GENERANDO": 1, "REVISANDO": 3, "VEREDICTO PENDIENTE": 5}.get(glabel, -1)
-    if glabel == "GENERANDO" and vinfo.get("veredicto_efectivo") == "CORREGIR":
-        active_idx = 4
-    all_done = glabel == "APPROVED"
-    qs = '<div class="gcard">'
-    for i, (n, s) in enumerate(nodes):
-        cls = "on" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
-        qs += (f'<div class="qstep {cls}"><div class="n">{i+1}</div>'
-               f'<div><div class="t">{n}</div><div class="s">{s}</div></div></div>')
-    st.markdown(qs + "</div>", unsafe_allow_html=True)
-
-    # muse mini status
-    mstatus = ms.get("status", "—")
-    mh = hours_since(ms.get("last_heartbeat")) if ms.get("last_heartbeat") else 999.0
-    st.markdown(f"""<div class="gcard"><h4>🤖 Muse · {mstatus}</h4>
-      <div class="kv-muted">{(ms.get("current_step") or "—")[:110]}</div>
-      <div class="kv-muted" style="margin-top:4px;font-size:.76rem">heartbeat {hace_str(mh)}</div></div>""",
-                unsafe_allow_html=True)
-
-# ================= RENDERS (detalle) =================
-elif TAB == "renders":
-    vinfo = next((x for x in versions if x["version"] == sel), {})
-    meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
-    vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
-    dec = gh_json(f"jobs/{jid}/versions/{sel}/decision.json") or {}
-    audit = gh_json(f"jobs/{jid}/versions/{sel}/audit.json") or {}
-    mtype, mpath = asset_path(sel)
-    st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap">
-      <div class="kv-big" style="font-size:1.3rem">{sel}</div>{vbadge(vinfo.get("veredicto_efectivo"))}</div>""",
-                unsafe_allow_html=True)
-    if mtype == "image":
-        st.image(gh_raw(mpath), use_container_width=True)
-    elif mtype == "video":
-        st.video(gh_raw(mpath))
+    # ================= DESKTOP =================
+    st.markdown('<div class="only-d">', unsafe_allow_html=True)
+    if focus:
+        if st.button("< Volver", key="d_unfocus"):
+            st.session_state.focus = False; st.rerun()
+        if mtype == "image": st.image(gh_raw(mpath), use_container_width=True)
+        elif mtype == "video": st.video(gh_raw(mpath))
+        st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.info("Aún no sincronizado.")
-    params = meta.get("params", {})
-    halls = vd.get("hallazgos", [])
-    cov = vd.get("visual_coverage") or {}
-    npass = sum(1 for c in cov.values() if isinstance(c, dict)
-                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "PASS")
-    nfail = sum(1 for c in cov.values() if isinstance(c, dict)
-                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "FAIL")
-    cost = dec.get("costo_usd_estimado", "—")
-    st.markdown(f"""<div class="gcard"><h4>Specs</h4><div class="spec">
-      <div><div class="k">Modelo</div><div class="v">{params.get("model", "—")}</div></div>
-      <div><div class="k">Resolución</div><div class="v">{(audit.get("asset_original", {}) or {}).get("resolucion", "—")}</div></div>
-      <div><div class="k">Confidence</div><div class="v">{vd.get("confianza", "—")}</div></div>
-      <div><div class="k">Costo</div><div class="v">{f"${cost:.4f}" if isinstance(cost, (int, float)) else cost}</div></div>
-      <div><div class="k">Defectos</div><div class="v">{len(halls)}</div></div>
-      <div><div class="k">QA coverage</div><div class="v">{f"{npass}✓ {nfail}✗" if cov else "—"}</div></div>
-      </div></div>""", unsafe_allow_html=True)
-    if halls:
-        hh = '<div class="gcard"><h4>Hallazgos QA</h4>'
-        for h in halls:
-            hh += f"<div style='margin-bottom:8px'>• <b>{h.get('categoria','')}</b> <span class='kv-muted'>({h.get('severidad','')})</span><br><span class='kv-muted'>{h.get('descripcion','')[:200]}</span></div>"
-        st.markdown(hh + "</div>", unsafe_allow_html=True)
-    tr = vd.get("temporal_review") or {}
-    if tr:
-        with st.expander("🎬 Video QA"):
-            for cat, c in tr.items():
-                if isinstance(c, dict):
-                    ic = {"PASS": "✅", "FAIL": "❌", "NOT_VERIFIABLE": "⚠️"}.get(c.get("estado"), "▫")
-                    st.markdown(f"{ic} **{cat}** — {c.get('estado')}")
+        insp_open = st.session_state.insp_open
+        cols = st.columns([0.55, 5.2, 2.4] if insp_open else [0.55, 7.6])
+        # ---- rail ----
+        with cols[0]:
+            st.markdown('<div class="railbtn">', unsafe_allow_html=True)
+            stages = pipe_stages()
+            for sid, icon, label, active, _ in stages:
+                mk = "primary" if (st.session_state.pipe_sel == sid or
+                                   (not st.session_state.pipe_sel and
+                                    ((sid == "elvin" and PEND) or
+                                     (sid == "sup" and LIVE_LBL == "Supervisor reviewing") or
+                                     (sid == "gen" and LIVE_LBL == "Generating")))) else "secondary"
+                if st.button(("✓ " if active and mk == "secondary" else "") + icon,
+                             key=f"rail_{sid}", help=label, type=mk):
+                    st.session_state.pipe_sel = None if st.session_state.pipe_sel == sid else sid
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+            if st.session_state.pipe_sel:
+                sg = next(s for s in stages if s[0] == st.session_state.pipe_sel)
+                st.markdown(f'<div class="rdetail"><b>{sg[2]}</b><br>{sg[4]}</div>',
+                            unsafe_allow_html=True)
+        # ---- canvas ----
+        with cols[1]:
+            if cmpv and len(cmpv) == 2:
+                c1, c2 = st.columns(2)
+                for col, vn in zip((c1, c2), cmpv):
+                    _, p = apath(vn)
+                    with col:
+                        st.markdown(f"<div style='font-weight:800;margin-bottom:4px'>{vn}</div>",
+                                    unsafe_allow_html=True)
+                        if p: st.image(gh_raw(p), use_container_width=True)
+                if st.button("Cerrar comparacion", key="d_cmp_off"):
+                    st.session_state.cmp = None; st.rerun()
+            elif mtype == "image":
+                st.markdown('<div class="stagebox fade">', unsafe_allow_html=True)
+                st.image(gh_raw(mpath), use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            elif mtype == "video":
+                st.video(gh_raw(mpath))
+            else:
+                st.info("Render aun no sincronizado.")
+            st.markdown('<div class="cbar">', unsafe_allow_html=True)
+            st.markdown(f"""<span class="cbadge {vcls(vinfo.get('veredicto_efectivo'))}">{sel} · {vlab(vinfo.get('veredicto_efectivo'))}</span>
+              <span style="color:var(--ft);font-size:.76rem">{hace(AGE)} · {meta.get('params', {}).get('model', 'krea 2')}</span>""",
+                        unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            cb1, cb2, cb3, cb4 = st.columns(4)
+            if cb1.button("◐ Comparar", key="d_cmp"):
+                vs = [v["version"] for v in versions]
+                st.session_state.cmp = vs[-2:] if len(vs) >= 2 else None
+                st.rerun()
+            if cb2.button("⛶ Fullscreen", key="d_fs"):
+                st.session_state.focus = True; st.rerun()
+            if cb3.button(("◀ Inspector" if insp_open else "Inspector ▶"), key="d_insp"):
+                st.session_state.insp_open = not insp_open; st.rerun()
+            # filmstrip
+            fs = '<div class="fstrip">'
+            for v in reversed(versions):
+                vn = v["version"]; _, p = apath(vn)
+                t = thumb_b64(p) if p else None
+                if t:
+                    fs += f'<img src="data:image/jpeg;base64,{t}" class="{"sel" if vn == sel else ""}" title="{vn}">'
+            st.markdown(fs + "</div>", unsafe_allow_html=True)
+            try:
+                dpick = st.pills("vv", [v["version"] for v in reversed(versions)],
+                                 default=sel, key="dpick", label_visibility="collapsed")
+            except Exception:
+                dpick = st.selectbox("vv", [v["version"] for v in reversed(versions)], key="dpick2",
+                                     label_visibility="collapsed")
+            if dpick and dpick != sel:
+                st.session_state.sel_ver = dpick; st.rerun()
+            # live bar
+            st.markdown(f"""<div class="livebar"><span class="livedot"></span>
+              <b>{LIVE_LBL}</b><span>{MSTEP[:90]}</span></div>""", unsafe_allow_html=True)
+        # ---- inspector ----
+        if insp_open:
+            with cols[2]:
+                if PEND:
+                    st.markdown(f"""<div class="rvhead"><h3>Tu decision</h3>
+                      <p>{cur} supero QA · nada secundario aqui</p></div>""", unsafe_allow_html=True)
+                    halls = (gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}).get("hallazgos", [])
+                    if not halls:
+                        st.markdown("<p style='color:var(--grn);font-weight:700'>Sin hallazgos bloqueantes.</p>",
+                                    unsafe_allow_html=True)
+                    else:
+                        for h in halls[:3]:
+                            st.markdown(f"<div class='find'>• <b>{h.get('categoria')}</b>: {str(h.get('descripcion'))[:120]}</div>",
+                                        unsafe_allow_html=True)
+                    if st.button("APROBAR", key="d_ap", type="primary", use_container_width=True):
+                        send_decision("approve_final", "")
+                    if st.button("PEDIR CAMBIOS", key="d_rc", use_container_width=True):
+                        st.session_state["d_rc_open"] = not st.session_state.get("d_rc_open", False)
+                    if st.session_state.get("d_rc_open"):
+                        nn = st.text_input("c", key="d_note", placeholder="Describe los cambios…",
+                                           label_visibility="collapsed")
+                        if st.button("Enviar cambios", key="d_rc_go", type="primary"):
+                            if nn.strip(): send_decision("request_changes", nn)
+                            else: st.error("Escribe los cambios primero.")
+                    if st.button("RECHAZAR", key="d_rj", use_container_width=True):
+                        send_decision("reject", "")
+                else:
+                    st.markdown(f"""<div class="insp fade"><h5>Inspector</h5>
+                      <div class="vname">{sel}</div>
+                      <div style="margin:4px 0 8px"><span class="cbadge {vcls(vinfo.get('veredicto_efectivo'))}">{vlab(vinfo.get('veredicto_efectivo'))}</span></div>""",
+                                unsafe_allow_html=True)
+                    halls = vd.get("hallazgos", []); cov = vd.get("visual_coverage") or {}
+                    st.markdown("<h5>QC</h5>", unsafe_allow_html=True)
+                    for cat in ("identity", "anatomy", "skin", "hands"):
+                        it = cov.get(cat, {}) if isinstance(cov.get(cat), dict) else {}
+                        fl = [k for k, x in it.items() if isinstance(x, dict) and x.get("estado") == "FAIL"]
+                        st.markdown(f"<div class='qcrow'><b>{cat}</b><span class='{'bad' if fl else 'ok'}'>{'✗' if fl else '✓'}</span></div>",
+                                    unsafe_allow_html=True)
+                    if halls:
+                        st.markdown("<h5 style='margin-top:10px'>Findings</h5>", unsafe_allow_html=True)
+                        for h in halls[:4]:
+                            st.markdown(f"<div class='find'>• <b>{h.get('categoria')}</b>: {str(h.get('descripcion'))[:120]}</div>",
+                                        unsafe_allow_html=True)
+                    cost = (gh_json(f"jobs/{jid}/versions/{sel}/decision.json") or {}).get("costo_usd_estimado", "--")
+                    st.markdown(f"""<h5 style='margin-top:10px'>Specs</h5><div class="spec2">
+                      <div><div class="k">Modelo</div><div class="v">{meta.get('params', {}).get('model', 'krea 2')}</div></div>
+                      <div><div class="k">Conf</div><div class="v">{vd.get('confianza', '--')}</div></div>
+                      <div><div class="k">Costo</div><div class="v">{cost}</div></div>
+                      <div><div class="k">Render</div><div class="v">{hace(hsince(meta.get('registered')))}</div></div>
+                      </div></div>""", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# ================= QUEUE (actividad) =================
+# ================================================================ QUEUE
 elif TAB == "queue":
-    st.markdown(f"""<div class="gcard"><h4>Estado del job</h4>
-      <span class="orb {gcls}"><span class="d"></span>{glabel}</span>
-      <div class="kv-muted" style="margin-top:8px">Última actualización {hace_str(STATE_AGE_H)}</div></div>""",
+    st.markdown(f"""<div class="insp" style="margin-bottom:10px"><h5>Job</h5>
+      <div style="display:flex;align-items:center;gap:10px"><b>{jid}</b>
+      <span class="cbadge {'green' if LIVE else 'gray'}">{LIVE_LBL}</span></div>
+      <div style="color:var(--mu);font-size:.8rem;margin-top:6px">Actualizado {hace(AGE)}</div></div>""",
                 unsafe_allow_html=True)
-    evs = build_events()
-    tl = '<div class="gcard"><h4>Render log</h4><div class="tl">'
-    for ts, kc, txt in evs[-25:]:
-        tl += (f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
-               f'<span class="tl-txt">{txt}</span></div>')
-    st.markdown(tl + "</div></div>", unsafe_allow_html=True)
-    ev = gh_json(f"jobs/{jid}/events.json") or {"lines": []}
-    with st.expander("Log técnico"):
+    evs = evts()
+    st.markdown('<div class="insp"><h5>Render log</h5>', unsafe_allow_html=True)
+    for ts, txt in evs[-25:]:
+        try:
+            tstr = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).strftime("%H:%M")
+        except Exception:
+            tstr = "--"
+        st.markdown(f"<div class='find'><span style='color:var(--ft)'>{tstr}</span> · {txt}</div>",
+                    unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    with st.expander("Log tecnico"):
+        ev = gh_json(f"jobs/{jid}/events.json") or {"lines": []}
         st.code("\n".join(ev.get("lines", [])[-40:]))
 
-# ================= MODEL (aprendizaje) =================
+# ================================================================ MODEL
 elif TAB == "model":
-    fase = metrics.get("fase", phase.get("fase", "?"))
-    st.markdown(f"""<div class="gcard" style="text-align:center;padding:26px">
-      <div class="kv-big" style="font-size:1.1rem">{fase}</div>
-      <div class="kv-muted">{"Supervisión total" if fase == "FASE_1" else ""}</div></div>""",
-                unsafe_allow_html=True)
-    pct = metrics.get("acuerdo_pct")
-    try:
-        pnum = int(float(pct)) if pct not in (None, "?", "") else 0
-    except Exception:
-        pnum = 0
-    ring_c = "var(--green)" if pnum >= 80 else ("var(--amber)" if pnum >= 50 else "var(--violet)")
+    fase = metrics.get("fase", "?")
+    pct = metrics.get("acuerdo_pct", 0) or 0
     hcm = metrics.get("human_caught_miss", 0)
-    st.markdown(f"""<div class="gcard"><h4>Muse ↔ QA</h4><div class="ringwrap">
-      <div class="ring" style="--p:{pnum};--c:{ring_c}"><span>{pct if pct not in (None,'') else '—'}%</span></div>
-      <div><div style="font-weight:800">acuerdo acumulado</div>
-      <div class="kv-muted">{metrics.get("revisiones_totales", 0)} revisiones · {metrics.get("reglas_aprendidas", 0)} reglas</div></div>
-      </div></div>""", unsafe_allow_html=True)
     fp = metrics.get("falsos_positivos_muse", 0) + metrics.get("falsos_positivos_supervisor", 0)
-    st.markdown(f"""<div class="grid2">
-      <div class="gcard"><h4>Costo QA</h4><div class="kv-big">${metrics.get("costo_supervisor_total_usd", 0):.4f}</div></div>
-      <div class="gcard"><h4>Elvin caught</h4><div class="kv-big" style="{'color:var(--red)' if hcm else ''}">{hcm}</div>
-        <div class="kv-muted">bloquea FASE_1</div></div>
-      <div class="gcard"><h4>Falsos +</h4><div class="kv-big">{fp}</div></div>
-      <div class="gcard"><h4>Sin desacuerdo</h4><div class="kv-big">{metrics.get("jobs_consecutivos_sin_desacuerdo", 0)}</div></div>
-      </div>""", unsafe_allow_html=True)
-    n_sup = sum(1 for d in disag if d.get("clase") == "missed_by_muse")
-    n_elv = sum(1 for d in disag if d.get("clase") == "human_caught_miss")
-    n_muse = metrics.get("llamadas_evitadas", 0)
-    st.markdown(f"""<div class="gcard"><h4>Quién lo detectó</h4><div class="grid3">
-      <div><div class="kv-big" style="color:var(--green);font-size:1.3rem">{n_muse}</div><div class="kv-muted">Muse</div></div>
-      <div><div class="kv-big" style="color:var(--cyan);font-size:1.3rem">{n_sup}</div><div class="kv-muted">QA</div></div>
-      <div><div class="kv-big" style="color:var(--amber);font-size:1.3rem">{n_elv}</div><div class="kv-muted">Elvin</div></div>
-      </div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="insp" style="text-align:center;margin-bottom:10px">
+      <h5>Model</h5><div style="font-size:1.4rem;font-weight:800">{fase}</div>
+      <div style="color:var(--mu);font-size:.82rem">Acuerdo Muse-QA: <b style="color:var(--tx)">{pct}%</b> ·
+      Revisiones: {metrics.get('revisiones_totales', 0)} · Reglas: {metrics.get('reglas_aprendidas', 0)}</div></div>""",
+                unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""<div class="insp"><h5>Costo QA</h5>
+          <div style="font-size:1.5rem;font-weight:800">${metrics.get('costo_supervisor_total_usd', 0):.4f}</div></div>""",
+                    unsafe_allow_html=True)
+        st.markdown(f"""<div class="insp"><h5>Falsos positivos</h5>
+          <div style="font-size:1.5rem;font-weight:800">{fp}</div></div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"""<div class="insp" {'style="border:1px solid rgba(248,113,113,.35)"' if hcm else ''}><h5>Elvin caught</h5>
+          <div style="font-size:1.5rem;font-weight:800;{'color:var(--red)' if hcm else ''}">{hcm}</div>
+          <div style="color:var(--mu);font-size:.78rem">bloquea salida de FASE_1</div></div>""",
+                    unsafe_allow_html=True)
+        st.markdown(f"""<div class="insp"><h5>Sin desacuerdo</h5>
+          <div style="font-size:1.5rem;font-weight:800">{metrics.get('jobs_consecutivos_sin_desacuerdo', 0)}</div></div>""",
+                    unsafe_allow_html=True)
     with st.expander("Reglas aprendidas"):
         for r in rules_l:
             if r.get("activa"):
                 st.markdown(f"**{r['id']}** — {r['regla'][:200]}")
 
-# ---------------- auto-refresh ----------------
-st.caption("Auto-refresh ~30s · Neon Studio v4")
+st.caption("Mission Control v5 · auto-refresh 30s")
 time.sleep(30)
 st.rerun()
