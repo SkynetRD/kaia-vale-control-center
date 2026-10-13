@@ -1,4 +1,4 @@
-"""KAIA VALE — Mission Control v6.
+"""KAIA VALE — Mission Control v6.1.
 UI-only rewrite. Keeps GitHub bus, decision protocol and backend contracts unchanged.
 """
 import base64, json, time, uuid
@@ -29,25 +29,25 @@ st.markdown(r"""<style>
 :root{--bg:#08090e;--panel:#10121a;--panel2:#151824;--line:#252a3a;--text:#f5f7ff;--muted:#8e96ad;
 --violet:#8b5cf6;--cyan:#22d3ee;--green:#34d399;--red:#fb7185;--amber:#fbbf24}
 html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--text)}
-[data-testid="stHeader"],#MainMenu,footer{display:none!important}.block-container{max-width:1800px;padding:.55rem .8rem 1rem}
-[data-testid="stVerticalBlock"]{gap:.55rem}.kv-top{display:flex;align-items:center;gap:12px;height:48px;border-bottom:1px solid var(--line);margin-bottom:4px}
+[data-testid="stHeader"],#MainMenu,footer{display:none!important}.block-container{max-width:2200px;padding:.35rem .65rem .65rem}
+[data-testid="stVerticalBlock"]{gap:.38rem}.kv-top{display:flex;align-items:center;gap:12px;height:44px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .kv-logo{font-weight:900;letter-spacing:.14em}.kv-logo span{background:linear-gradient(90deg,var(--violet),var(--cyan));-webkit-background-clip:text;color:transparent}
 .kv-live{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:.82rem}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
-[data-testid="stButton"] button{border-radius:10px;border:1px solid var(--line);background:#11131b;color:var(--text);min-height:38px}
+[data-testid="stButton"] button{border-radius:10px;border:1px solid var(--line);background:#11131b;color:var(--text);min-height:34px}
 [data-testid="stButton"] button:hover{border-color:#545b74}.nav [data-testid="stButton"] button{min-height:36px}
 .pipe-title,.ins-title{font-size:.66rem;letter-spacing:.16em;color:var(--muted);font-weight:800;text-transform:uppercase;margin:2px 0 8px}
 .pipe-item{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:10px;color:var(--muted);font-size:.82rem;margin-bottom:5px;border:1px solid transparent}
 .pipe-item.done{color:#b7f7d4}.pipe-item.active{color:white;background:#17152a;border-color:#5b3eb0}.pipe-item.pending{opacity:.58}
 .pi{width:19px;height:19px;border-radius:50%;display:grid;place-items:center;border:1px solid #4a5062;font-size:.66rem}.done .pi{border-color:var(--green);color:var(--green)}.active .pi{border-color:var(--violet);background:#6d45db;color:white}
-.canvas-shell{background:#05060a;border:1px solid #1d2130;border-radius:16px;padding:8px;min-height:62vh;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.canvas-shell{background:#05060a;border:1px solid #1d2130;border-radius:16px;padding:8px;height:calc(100vh - 190px);min-height:620px;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .canvas-label{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:.75rem;margin:0 2px 5px}.badge{padding:4px 8px;border-radius:999px;background:#171923;border:1px solid var(--line);font-size:.7rem;font-weight:800}
-.ins{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}.ins h4{font-size:.9rem;margin:0 0 10px}.qc{display:flex;justify-content:space-between;padding:7px 8px;background:#171923;border-radius:8px;margin:5px 0;font-size:.78rem}.ok{color:var(--green)}.bad{color:var(--red)}
+.ins{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px}.ins h4{font-size:.9rem;margin:0 0 10px}.qc{display:flex;justify-content:space-between;padding:7px 8px;background:#171923;border-radius:8px;margin:5px 0;font-size:.78rem}.ok{color:var(--green)}.bad{color:var(--red)}
 .find{font-size:.76rem;line-height:1.42;color:#c5cada;padding:7px 0;border-bottom:1px solid #202432}.spec{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.72rem;color:var(--muted)}.spec b{display:block;color:var(--text);margin-top:2px}
-.livebar{display:flex;align-items:center;gap:9px;height:38px;padding:0 12px;background:#0e1017;border:1px solid var(--line);border-radius:11px;color:var(--muted);font-size:.78rem}.livebar b{color:var(--text)}
+.livebar{display:flex;align-items:center;gap:9px;height:34px;padding:0 12px;background:#0e1017;border:1px solid var(--line);border-radius:11px;color:var(--muted);font-size:.78rem}.livebar b{color:var(--text)}
 .review{border:1px solid rgba(139,92,246,.55);background:linear-gradient(90deg,rgba(139,92,246,.09),rgba(34,211,238,.04));border-radius:12px;padding:8px 10px;color:#ddd9ff;font-size:.78rem}
 .small{font-size:.72rem;color:var(--muted)}
-[data-testid="stImage"] img{max-height:66vh;object-fit:contain!important;background:#05060a;border-radius:10px}
-video{max-height:66vh!important;background:#05060a!important;border-radius:10px}
+[data-testid="stImage"] img{max-height:calc(100vh - 205px);object-fit:contain!important;background:#05060a;border-radius:10px}
+video{max-height:calc(100vh - 205px)!important;background:#05060a!important;border-radius:10px}
 @media(max-width:760px){.block-container{padding:.35rem .45rem 5rem}.kv-top{height:42px}.desktop-only{display:none!important}
 .canvas-shell{min-height:0}.ins{border-radius:12px}[data-testid="stImage"] img,video{max-height:64vh!important}.livebar{position:sticky;bottom:4px;z-index:20}.kv-logo{font-size:.8rem}}
 </style>""", unsafe_allow_html=True)
@@ -138,13 +138,12 @@ def live_state():
 LIVE_LBL=live_state(); MSTEP=ms.get("current_step") or ""
 
 st.markdown(f"<div class='kv-top'><div class='kv-logo'><span>◆ KAIA VALE</span></div><div class='small'>{jid}</div><div class='kv-live'><span class='dot'></span><b style='color:white'>{LIVE_LBL}</b><span class='desktop-only'>QA ${budget.get('monthly_used_usd',0):.2f}</span></div></div>",unsafe_allow_html=True)
-nav=st.columns([1,1,1,5])
+nav=st.columns([.72,.72,.72,5.8])
 for i,name in enumerate(("Studio","Queue","Model")):
     if nav[i].button(name,key=f"nav_{name}",type="primary" if st.session_state.tab==name else "secondary",use_container_width=True):
         st.session_state.tab=name; st.session_state.compare=False; st.session_state.focus=False; st.rerun()
-if len(job_ids)>1:
-    chosen=nav[3].selectbox("Job",job_ids,index=job_ids.index(jid),label_visibility="collapsed")
-    if chosen!=jid: st.session_state.jid=chosen; st.session_state.sel_ver=None; st.rerun()
+chosen=nav[3].selectbox("Job",job_ids,index=job_ids.index(jid),label_visibility="collapsed")
+if chosen!=jid: st.session_state.jid=chosen; st.session_state.sel_ver=None; st.rerun()
 
 # Muse yes/no blocker
 if ms.get("status")=="BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
@@ -174,7 +173,9 @@ def send_decision(action,note=""):
 
 def stage_data():
     vd=verdict(cur) if cur else {}; ve=cur_info.get("veredicto_efectivo",""); s=state.get("state",""); has=bool(versions)
-    return [("Brief",has and s!="GENERATING"),("Generate",has),("Muse QC",bool(vd)),("Supervisor",ve in ("CORREGIR","ESCALAR","READY_FOR_ELVIN_REVIEW","APROBADO")),("Elvin",PEND or bool(cur_info.get("decidido"))),("Publish",s=="APPROVED")]
+    elvin_done = bool(cur_info.get("decidido")) or ve == "APROBADO" or s == "APPROVED"
+    publish_done = s in ("PUBLISHED", "DONE")
+    return [("Brief",has and s!="GENERATING"),("Generate",has),("Muse QC",bool(vd)),("Supervisor",ve in ("CORREGIR","ESCALAR","READY_FOR_ELVIN_REVIEW","APROBADO")),("Elvin",PEND or elvin_done),("Publish",publish_done)]
 
 TAB=st.session_state.tab
 if TAB=="Studio":
@@ -187,11 +188,12 @@ if TAB=="Studio":
         elif typ=="video": st.video(gh_raw(p))
     else:
         # Desktop workspace. Streamlit stacks these columns on narrow screens automatically.
-        pipe,canvas,insp=st.columns([1.25,5.6,2.15],gap="small")
+        pipe,canvas,insp=st.columns([1.05,6.8,1.85],gap="small")
         with pipe:
             st.markdown("<div class='pipe-title'>Pipeline</div>",unsafe_allow_html=True)
             stages=stage_data(); active_idx=next((i for i,(n,d) in enumerate(stages) if not d),len(stages)-1)
             if PEND: active_idx=4
+            elif stages[4][1] and not stages[5][1]: active_idx=5
             for i,(name,done) in enumerate(stages):
                 cls="done" if done and i<active_idx else "active" if i==active_idx else "pending"
                 sym="✓" if cls=="done" else str(i+1)
@@ -217,14 +219,20 @@ if TAB=="Studio":
                 if typ=="image": st.image(gh_raw(p),use_container_width=True)
                 elif typ=="video": st.video(gh_raw(p))
                 else: st.info("Asset todavía no sincronizado.")
-            # one control row only
-            a,b,c=st.columns([1,1,1])
-            if a.button("Comparar" if not st.session_state.compare else "Cerrar comparación",use_container_width=True): st.session_state.compare=not st.session_state.compare; st.rerun()
-            if b.button("Fullscreen",use_container_width=True): st.session_state.focus=True; st.rerun()
-            if c.button("Inspector" if not st.session_state.inspector else "Ocultar inspector",use_container_width=True): st.session_state.inspector=not st.session_state.inspector; st.rerun()
+            # Compact canvas tools; hide Compare when only one version exists.
+            toolcols=st.columns([.8,.8,5.4])
+            if len(versions)>1:
+                if toolcols[0].button("Compare" if not st.session_state.compare else "Close",use_container_width=True): st.session_state.compare=not st.session_state.compare; st.rerun()
+                fscol=toolcols[1]
+            else:
+                fscol=toolcols[0]
+            if fscol.button("⛶ Fullscreen",use_container_width=True): st.session_state.focus=True; st.rerun()
             # one version selector only
             opts=[v.get("version") for v in reversed(versions)]
-            picked=st.pills("Versiones",opts,default=sel,label_visibility="collapsed") if hasattr(st,"pills") else st.selectbox("Versiones",opts,index=opts.index(sel),label_visibility="collapsed")
+            if len(opts)>1:
+                picked=st.pills("Versiones",opts,default=sel,label_visibility="collapsed") if hasattr(st,"pills") else st.selectbox("Versiones",opts,index=opts.index(sel),label_visibility="collapsed")
+            else:
+                picked=sel
             if picked and picked!=sel: st.session_state.sel_ver=picked; st.session_state.compare=False; st.rerun()
             if PEND:
                 st.markdown("<div class='review'><b>READY FOR ELVIN REVIEW</b> · Esta decisión usa el protocolo existente del inbox.</div>",unsafe_allow_html=True)
@@ -241,6 +249,7 @@ if TAB=="Studio":
             st.markdown(f"<div class='livebar'><span class='dot'></span><b>{LIVE_LBL}</b><span>{MSTEP[:120] or (state.get('detail') or '')[:120]}</span></div>",unsafe_allow_html=True)
         with insp:
             if st.session_state.inspector:
+                if st.button("◀ Hide", key="hide_inspector", use_container_width=True): st.session_state.inspector=False; st.rerun()
                 vd=verdict(sel); mt=meta(sel); vi=next((v for v in versions if v.get("version")==sel),{})
                 st.markdown("<div class='pipe-title'>Inspector</div>",unsafe_allow_html=True)
                 st.markdown(f"<div class='ins'><h4>{sel}</h4><span class='badge'>{vi.get('veredicto_efectivo') or '—'}</span></div>",unsafe_allow_html=True)
@@ -294,6 +303,6 @@ elif TAB=="Model":
         if not active: st.caption("Sin reglas activas sincronizadas.")
         for r in active: st.markdown(f"**{r.get('id','—')}** — {r.get('regla','')}")
 
-st.caption("Mission Control v6 · UI rewrite · auto-refresh 30s")
+st.caption("Mission Control v6.1 · refined workspace · auto-refresh 30s")
 time.sleep(30)
 st.rerun()
