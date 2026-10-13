@@ -24,7 +24,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v7.2"
+APP_VERSION = "v7.3"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -1259,7 +1259,7 @@ def _apply_publish_defaults(targets, proposal):
     if cur_plat in plats and operation in plats[cur_plat].get("operations", []) and "pub_operation" not in st.session_state:
         st.session_state.pub_operation = operation
     if "pub_caption" not in st.session_state:
-        st.session_state.pub_caption = str(proposal.get("caption") or "")
+        st.session_state.pub_caption = str(proposal.get("caption") or plan.get("caption_draft") or "")
     when = _proposal_when(proposal, plan)
     if when and "pub_when" not in st.session_state:
         st.session_state.pub_when = "Programar"
@@ -1396,6 +1396,17 @@ def _qc_line(vn, job_id):
         return "QC sin datos"
     return "QC: falla " + ", ".join(fails) if fails else "QC: todo OK"
 
+def render_caption_line(op, cap, draft=False):
+    """Caption written by Muse (final from publish_proposal, else draft from plan.json)."""
+    cap = str(cap or "").strip()
+    if cap:
+        lbl = "Caption de Muse (borrador)" if draft else "Caption de Muse"
+        st.markdown(f"<div class='find'><b>{lbl}:</b><br>{esc(cap).replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
+    elif op == "story":
+        st.caption("Story: sin caption (se publica limpia).")
+    elif op:
+        st.caption("Muse todavía no escribió el caption.")
+
 def render_plan_card(job_id, plan):
     """Planned piece with no render yet."""
     with st.container(border=True, key=f"ag_plan_{job_id}"):
@@ -1407,6 +1418,7 @@ def render_plan_card(job_id, plan):
             st.caption(where)
         if plan.get("brief"):
             st.markdown(f"<div class='find'>{esc(str(plan.get('brief'))[:220])}</div>", unsafe_allow_html=True)
+        render_caption_line(plan.get("operation"), plan.get("caption_draft"), draft=True)
         stt = as_dict(gh_json(f"jobs/{job_id}/state.json", {}))
         st.caption(stt.get("detail") or "Muse todavía no generó la imagen. Aparecerá aquí cuando pase la revisión.")
 
@@ -1419,6 +1431,8 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
         if where:
             st.caption(where)
         show_asset(vn, job_id)
+        _prop_cap = str(vjson(vn, "publish_proposal.json", job_id).get("caption") or "").strip()
+        render_caption_line(plan.get("operation"), _prop_cap or plan.get("caption_draft"), draft=not _prop_cap)
         st.caption(_qc_line(vn, job_id))
         k = f"{job_id}_{vn}"
         if inflight_for(vn, job_id):
@@ -1464,6 +1478,8 @@ def _pub_summary(job_id, vn, plan):
     except ValueError:
         when_lbl = "sin hora"
     cap = str(prop.get("caption") or "").strip()
+    if not cap and plan.get("caption_draft"):
+        cap = "(borrador) " + str(plan.get("caption_draft")).strip()
     cap_lbl = (cap[:90] + ("…" if len(cap) > 90 else "")) if cap else ("sin caption (Story)" if op == "story" else "sin caption propuesto")
     return OP_LABELS.get(op, op or "formato sin definir"), when_lbl, cap_lbl, bool(prop)
 
