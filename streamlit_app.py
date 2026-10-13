@@ -1,4 +1,4 @@
-"""KAIA VALE — Mission Control v6.9.
+"""KAIA VALE — Mission Control v7.0.
 Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
 decision records only gain additive fields (asset_file, asset_sha = SHA-256 of the asset bytes, asset_git_sha).
 - Asset approvals only through job/version decisions: Muse's yes/no channel can no
@@ -14,15 +14,17 @@ decision records only gain additive fields (asset_file, asset_sha = SHA-256 of t
   without decision buttons explain why (CORREGIR / ESCALAR / not synced).
 - v6.9: publish/v1 — authorize/revoke publication separately from approve_final, shown only
   when the backend declares protocol/capabilities.json publish_v1=true.
+- v7.0: Agenda tab — proposals by planned day (jobs/<job>/plan.json, plan/v1) with
+  approve / reject / request changes per image; same decision protocol as Studio.
 """
 import base64, hashlib, hmac, html, inspect, json, re, time, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v6.9"
+APP_VERSION = "v7.0"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -113,6 +115,8 @@ button[kind="primary"]:hover{background:#7c4cf0!important}
 [data-testid="stImage"] img{max-height:calc(100vh - 300px);object-fit:contain!important;background:#05060a;border-radius:10px}
 video{max-height:calc(100vh - 300px)!important;background:#05060a!important;border-radius:10px}
 .st-key-kv_focus [data-testid="stImage"] img,.st-key-kv_focus video{max-height:calc(100vh - 110px)!important}
+/* agenda cards: smaller media so several proposals fit on screen */
+[class*="st-key-ag_card_"] [data-testid="stImage"] img,[class*="st-key-ag_card_"] video{max-height:46vh!important}
 /* review / decision */
 .review{margin-bottom:8px;border:1px solid rgba(139,92,246,.55);background:linear-gradient(90deg,rgba(139,92,246,.1),rgba(34,211,238,.04));border-radius:12px;padding:9px 12px;color:#ddd9ff;font-size:.8rem}
 .review.green{border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.07);color:#c9f8e2}
@@ -138,12 +142,15 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 /* nav: tabs + Salir in one row, job selector full width below */
 .st-key-kv_nav [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.4rem!important}
 .st-key-kv_nav [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
-.st-key-kv_nav [data-testid="stColumn"]:nth-child(4){order:5;flex:1 1 100%!important}
+.st-key-kv_nav [data-testid="stColumn"]:nth-child(5){order:6;flex:1 1 100%!important}
 .st-key-kv_nav button{min-height:34px!important;padding:0 6px!important}
 /* decision + tools rows never stack */
 .st-key-kv_decide [data-testid="stHorizontalBlock"],.st-key-kv_tools [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important}
 .st-key-kv_decide [data-testid="stColumn"],.st-key-kv_tools [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
 .st-key-kv_decide button{padding:0 4px!important;font-size:.8rem!important}
+.st-key-ag_quick [data-testid="stHorizontalBlock"],[class*="st-key-ag_card_"] [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important}
+.st-key-ag_quick [data-testid="stColumn"],[class*="st-key-ag_card_"] [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
+.st-key-ag_quick button,[class*="st-key-ag_card_"] button{padding:0 4px!important;font-size:.78rem!important}
 [data-testid="stImage"] img,video{max-height:58vh!important}
 .livebar{position:sticky;bottom:4px;z-index:20}}
 </style>""", unsafe_allow_html=True)
@@ -398,33 +405,42 @@ AGE = hours_since(state.get("updated"))
 LIVE = AGE < .25
 cur_info = next((v for v in versions if v["version"] == cur), {})
 
-def vinfo(vn):
+JOBS_BY_ID = {j["job_id"]: j for j in jobs}
+
+def job_versions(job_id):
+    """Sorted versions of any job from the snapshot."""
+    j = JOBS_BY_ID.get(job_id) or {}
+    return sorted([v for v in as_list(j.get("versions")) if isinstance(v, dict) and v.get("version")], key=_vnum)
+
+def vinfo(vn, job_id=None):
+    if job_id and job_id != jid:
+        return next((v for v in job_versions(job_id) if v["version"] == vn), {})
     return next((v for v in versions if v["version"] == vn), {})
 
 def vkey(vn, job_id=None):
     return f"{job_id or jid}|{vn}"
 
-def vfiles(vn):
+def vfiles(vn, job_id=None):
     if not vn:
         return {}
-    return gh_dir(f"jobs/{jid}/versions/{vn}") or {}
+    return gh_dir(f"jobs/{job_id or jid}/versions/{vn}") or {}
 
-def vjson(vn, name):
-    return as_dict(parse_json(blob(vfiles(vn).get(name)), {}))
+def vjson(vn, name, job_id=None):
+    return as_dict(parse_json(blob(vfiles(vn, job_id).get(name)), {}))
 
-def verdict(vn): return vjson(vn, "verdict.json")
-def meta(vn): return vjson(vn, "meta.json")
+def verdict(vn, job_id=None): return vjson(vn, "verdict.json", job_id)
+def meta(vn, job_id=None): return vjson(vn, "meta.json", job_id)
 
-def asset_info(vn):
-    files = vfiles(vn)
+def asset_info(vn, job_id=None):
+    files = vfiles(vn, job_id)
     for typ, ext in (("video", "mp4"), ("image", "png"), ("image", "jpg"), ("image", "jpeg")):
         f = files.get(f"asset.{ext}")
         if f:
             return typ, f
     return None, None
 
-def show_asset(vn):
-    typ, info = asset_info(vn)
+def show_asset(vn, job_id=None):
+    typ, info = asset_info(vn, job_id)
     data = blob(info, small=False) if info else None
     if typ and data is None:
         st.warning("No se pudo descargar el asset. Reintentando en el próximo refresco.")
@@ -435,30 +451,30 @@ def show_asset(vn):
     else:
         st.info("Asset todavía no sincronizado.")
 
-def decision_action(vn):
+def decision_action(vn, job_id=None):
     if not vn:
         return None
-    local = st.session_state.local_decided.get(vkey(vn))
+    local = st.session_state.local_decided.get(vkey(vn, job_id))
     if local:
         return local
-    d = vjson(vn, "decision_elvin.json")
+    d = vjson(vn, "decision_elvin.json", job_id)
     act = d.get("decision") or d.get("action")
     # Only protocol actions are decisions. Historical records such as
     # "chat_approval_sin_validez" must never render as approved.
     return act if act in DECISION_LABELS else None
 
-def invalid_decision(vn):
+def invalid_decision(vn, job_id=None):
     """Value of a decision_elvin.json that is NOT a protocol action (e.g. a chat approval), else None."""
     if not vn:
         return None
-    d = vjson(vn, "decision_elvin.json")
+    d = vjson(vn, "decision_elvin.json", job_id)
     act = d.get("decision") or d.get("action")
     return act if act and act not in DECISION_LABELS else None
 
-def is_decided(vn):
-    if decision_action(vn):
+def is_decided(vn, job_id=None):
+    if decision_action(vn, job_id):
         return True
-    return bool(vinfo(vn).get("decidido")) and not invalid_decision(vn)
+    return bool(vinfo(vn, job_id).get("decidido")) and not invalid_decision(vn, job_id)
 
 def _parse_ts(iso):
     try:
@@ -523,12 +539,13 @@ def _recent_ack_paths():
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return None
 
-def inbox_decision_for(vn, *, fresh=False):
+def inbox_decision_for(vn, *, fresh=False, job_id=None):
     """Find a decision for jid/vn that is still pending (inbox file without ACK), from any
     session/device. The backend never deletes inbox files, so pending = inbox ids − ack ids;
     only those few files are read. Returns (record|None, ok).
     With fresh=True also checks ACKs accepted in the last hours, covering the window
     before decision_elvin.json is synced."""
+    J = job_id or jid
     inbox = _tree("decisions/inbox") if fresh else gh_tree("decisions/inbox")
     acks = _tree("decisions/acks") if fresh else gh_tree("decisions/acks")
     if inbox is None or acks is None:
@@ -537,9 +554,9 @@ def inbox_decision_for(vn, *, fresh=False):
         if not name.endswith(".json"):
             continue
         d = as_dict(parse_json(blob(inbox[name]), {}))
-        if d.get("job_id") != jid or d.get("version") != vn or d.get("action") not in DECISION_LABELS:
+        if d.get("job_id") != J or d.get("version") != vn or d.get("action") not in DECISION_LABELS:
             continue   # publish/v1 messages are not content decisions
-        return {"decision_id": d.get("decision_id") or name[:-5], "job_id": jid, "version": vn,
+        return {"decision_id": d.get("decision_id") or name[:-5], "job_id": J, "version": vn,
                 "action": d.get("action"), "sent_at": _parse_ts(d.get("timestamp")), "ack_status": ""}, True
     if fresh:
         recent = _recent_ack_paths()
@@ -547,9 +564,9 @@ def inbox_decision_for(vn, *, fresh=False):
             return None, False
         for path in recent:
             a = as_dict(gh_json(path, {}, fresh=True))
-            if (a.get("job_id") == jid and a.get("version") == vn and a.get("action") in DECISION_LABELS
+            if (a.get("job_id") == J and a.get("version") == vn and a.get("action") in DECISION_LABELS
                     and str(a.get("status", "")).lower() in ACK_OK):
-                return {"decision_id": a.get("decision_id") or path.rsplit("/", 1)[-1][:-5], "job_id": jid,
+                return {"decision_id": a.get("decision_id") or path.rsplit("/", 1)[-1][:-5], "job_id": J,
                         "version": vn, "action": a.get("action"), "sent_at": time.time(), "ack_status": "accepted"}, True
     return None, True
 
@@ -592,10 +609,8 @@ for v in versions:
         if rec:
             st.session_state.inflight[k] = rec
 
-# 2) Poll the exact ACK (uncached) for every in-flight decision of this job.
+# 2) Poll the exact ACK (uncached) for every in-flight decision (any job: the Agenda decides across jobs).
 for k, p in list(st.session_state.inflight.items()):
-    if p.get("job_id") != jid:
-        continue
     ack = as_dict(gh_json(f"decisions/acks/{p['decision_id']}.json", {}, fresh=True))
     status = str(ack.get("status", "")).lower()
     if status in ACK_OK:
@@ -610,17 +625,17 @@ for k, p in list(st.session_state.inflight.items()):
     else:
         p["ack_status"] = status
 
-def inflight_for(vn):
-    return st.session_state.inflight.get(vkey(vn))
+def inflight_for(vn, job_id=None):
+    return st.session_state.inflight.get(vkey(vn, job_id))
 
-def is_reviewable(vn):
-    return (vinfo(vn).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
-            and not is_decided(vn) and not inflight_for(vn))
+def is_reviewable(vn, job_id=None):
+    return (vinfo(vn, job_id).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
+            and not is_decided(vn, job_id) and not inflight_for(vn, job_id))
 
 CUR_PEND = is_reviewable(cur)
 CUR_INFLIGHT = bool(inflight_for(cur))
 CUR_DECISION = decision_action(cur)
-JOB_HAS_INFLIGHT = any(p.get("job_id") == jid for p in st.session_state.inflight.values())
+JOB_HAS_INFLIGHT = bool(st.session_state.inflight)
 
 if JOB_HAS_INFLIGHT:
     st_autorefresh(interval=PENDING_REFRESH_MS, limit=None, key="pending_decision_refresh")
@@ -668,15 +683,15 @@ st.markdown(
     f"<span class='desktop-only'>· QA ${num(budget.get('monthly_used_usd')):.2f}</span></div></div>",
     unsafe_allow_html=True)
 with st.container(key="kv_nav"):
-    nav = st.columns([.72, .72, .72, 5.2, .6])
-    for i, name in enumerate(("Studio", "Queue", "Model")):
+    nav = st.columns([.72, .72, .72, .72, 4.6, .6])
+    for i, name in enumerate(("Studio", "Agenda", "Queue", "Model")):
         if nav[i].button(name, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
             st.session_state.tab = name
             st.session_state.compare = False
             st.session_state.focus = False
             st.rerun()
-    chosen = nav[3].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
-    if nav[4].button("Salir", key="logout", width="stretch"):
+    chosen = nav[4].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
+    if nav[5].button("Salir", key="logout", width="stretch"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -751,16 +766,17 @@ elif ms_blocked and q:
 
 
 # ───────────────────────── decisions ─────────────────────────
-def send_decision(action, note=""):
-    k = vkey(sel)
-    if inflight_for(sel):
+def send_decision(action, note="", job_id=None, vn=None):
+    J, V = job_id or jid, vn or sel
+    k = vkey(V, J)
+    if inflight_for(V, J):
         st.info("Ya hay una decisión esperando confirmación del backend.")
         return
-    if is_decided(sel) or not is_reviewable(sel):
+    if is_decided(V, J) or not is_reviewable(V, J):
         st.warning("Esta versión ya no está disponible para decisión.")
         return
     # Fresh (uncached) checks against the bus before writing anything.
-    fresh_files = _dir(f"jobs/{jid}/versions/{sel}")
+    fresh_files = _dir(f"jobs/{J}/versions/{V}")
     if fresh_files is None:
         st.error("No se pudo verificar el estado de la versión en GitHub. Reintenta.")
         return
@@ -769,7 +785,7 @@ def send_decision(action, note=""):
         st.warning("Esta versión ya tiene una decisión de Elvin registrada.")
         st.rerun()
     # Bind the decision to the exact asset blob Elvin is looking at.
-    shown_typ, shown = asset_info(sel)
+    shown_typ, shown = asset_info(V, J)
     fresh_asset = next((fresh_files.get(f"asset.{e}") for e in ("mp4", "png", "jpg", "jpeg") if fresh_files.get(f"asset.{e}")), None)
     if not shown or not fresh_asset:
         st.error("Esta versión no tiene asset sincronizado; no se puede decidir sobre ella.")
@@ -778,7 +794,7 @@ def send_decision(action, note=""):
         clear_bus_cache()
         st.warning("El asset de esta versión cambió desde que lo abriste. Revísalo de nuevo antes de decidir.")
         st.rerun()
-    rec, ok = inbox_decision_for(sel, fresh=True)
+    rec, ok = inbox_decision_for(V, fresh=True, job_id=J)
     if not ok:
         st.error("No se pudo verificar el inbox de decisiones en GitHub. Reintenta.")
         return
@@ -796,17 +812,17 @@ def send_decision(action, note=""):
     asset_sha256 = hashlib.sha256(asset_bytes).hexdigest()
     # Deterministic id: the same job/version/asset/action always maps to the same inbox file,
     # so a double tap or a stale API read hits "already exists" instead of creating a duplicate.
-    did = str(uuid.uuid5(DECISION_NS, f"{jid}|{sel}|{fresh_asset.get('sha')}|{action}"))
-    obj = {"decision_id": did, "job_id": jid, "version": sel, "action": action, "timestamp": now_iso(),
+    did = str(uuid.uuid5(DECISION_NS, f"{J}|{V}|{fresh_asset.get('sha')}|{action}"))
+    obj = {"decision_id": did, "job_id": J, "version": V, "action": action, "timestamp": now_iso(),
            "note": note.strip(), "asset_file": asset_file, "asset_sha": asset_sha256,
            "asset_git_sha": fresh_asset.get("sha")}
-    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"decision {action} {jid} {sel}", create_only=True)
+    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"decision {action} {J} {V}", create_only=True)
     already = not ok and d.startswith("HTTP 422")
     if already:
         # Already written (by this or another session): treat as sent, never write a second one.
         ok = True
     if ok:
-        st.session_state.inflight[k] = {"decision_id": did, "job_id": jid, "version": sel, "action": action,
+        st.session_state.inflight[k] = {"decision_id": did, "job_id": J, "version": V, "action": action,
                                         "sent_at": time.time(), "ack_status": ""}
         if already:
             set_notice("Esta decisión ya estaba enviada · esperando ACK del backend…")
@@ -937,22 +953,22 @@ def render_notice():
 PILLS_KW = {"required": True} if "required" in inspect.signature(st.pills).parameters else {}
 
 
-def status_badge(vn):
+def status_badge(vn, job_id=None):
     """(label, tone) — readable status for a version."""
-    act = decision_action(vn)
-    if inflight_for(vn):
+    act = decision_action(vn, job_id)
+    if inflight_for(vn, job_id):
         return "Decision sent", "violet"
     if act:
         return DECISION_LABELS.get(act, "Decided by Elvin"), DECISION_TONE.get(act, "green")
-    if invalid_decision(vn):
+    if invalid_decision(vn, job_id):
         return "Chat approval · not valid", "amber"
-    ve = vinfo(vn).get("veredicto_efectivo") or ""
+    ve = vinfo(vn, job_id).get("veredicto_efectivo") or ""
     if ve in VERDICT_LABELS:
         return VERDICT_LABELS[ve]
     return (ve.replace("_", " ").capitalize() if ve else "—"), ""
 
-def badge_html(vn):
-    label, tone = status_badge(vn)
+def badge_html(vn, job_id=None):
+    label, tone = status_badge(vn, job_id)
     return f"<span class='badge {tone}'>{esc(label)}</span>"
 
 def pipeline_items_html():
@@ -1222,6 +1238,160 @@ def render_publish_block():
                 send_publish_authorization(targets, platform, operation, caption, scheduled)
 
 
+# ───────────────────────── agenda (protocol/AGENDA_PROTOCOL.md, plan/v1) ─────────────────────────
+WEEKDAYS_ES = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
+MONTHS_ES = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+
+def today_local():
+    return datetime.now(LOCAL_TZ).date()
+
+def next_weekday(d, weekday):
+    """Next date with that weekday (0=Mon … 4=Fri), today counts if it matches."""
+    return d + timedelta(days=(weekday - d.weekday()) % 7)
+
+def day_label(d, n=None):
+    base = f"{WEEKDAYS_ES[d.weekday()]} {d.day} {MONTHS_ES[d.month - 1]}"
+    return base if n is None else f"{base} · {n}"
+
+def job_plan(job_id):
+    """plan.json of a job, validated. {} if absent or invalid."""
+    p = as_dict(gh_json(f"jobs/{job_id}/plan.json", {}))
+    if p.get("schema") != "plan/v1" or p.get("job_id") not in (None, job_id):
+        return {}
+    try:
+        p["_date"] = datetime.strptime(str(p.get("planned_for")), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return {}
+    return p
+
+def agenda_versions(job_id):
+    """Versions to show for a planned job: every candidate Elvin can act on or already acted on,
+    plus the latest one for context. Superseded fixes (CORREGIR/ESCALAR, not latest) are hidden."""
+    vs = job_versions(job_id)
+    if not vs:
+        return []
+    latest = vs[-1]["version"]
+    out = []
+    for v in vs:
+        vn = v["version"]
+        if (vn == latest or v.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
+                or decision_action(vn, job_id) or inflight_for(vn, job_id)):
+            out.append(vn)
+    return out
+
+def agenda_index():
+    """{date: [(job_id, plan)]} for all planned jobs, plus the list of unplanned jobs that have renders."""
+    by_day, unplanned = {}, []
+    for j in jobs:
+        jid_ = j["job_id"]
+        plan = job_plan(jid_)
+        if plan:
+            by_day.setdefault(plan["_date"], []).append((jid_, plan))
+        elif as_list(j.get("versions")):
+            unplanned.append(jid_)
+    for items in by_day.values():
+        items.sort(key=lambda it: (str(it[1].get("slot") or "99:99"), it[0]))
+    return by_day, unplanned
+
+def _qc_line(vn, job_id):
+    rows = qc_status(verdict(vn, job_id))
+    fails = [k for k, (ok, _) in rows.items() if ok is False]
+    if not rows or all(ok is None for ok, _ in rows.values()):
+        return "QC sin datos"
+    return "QC: falla " + ", ".join(fails) if fails else "QC: todo OK"
+
+def render_agenda_card(job_id, plan, vn):
+    with st.container(border=True, key=f"ag_card_{job_id}_{vn}"):
+        title = plan.get("title") or job_id
+        where = " · ".join(x for x in (plan.get("slot"), plan.get("platform"),
+                                       OP_LABELS.get(plan.get("operation"), plan.get("operation"))) if x)
+        st.markdown(f"<div class='ins-head'><b>{esc(title)} · {esc(vn)}</b>{badge_html(vn, job_id)}</div>", unsafe_allow_html=True)
+        if where:
+            st.caption(where)
+        show_asset(vn, job_id)
+        st.caption(_qc_line(vn, job_id))
+        k = f"{job_id}_{vn}"
+        if inflight_for(vn, job_id):
+            st.markdown("<div class='review'><b>Decisión enviada</b> · esperando confirmación del backend.</div>", unsafe_allow_html=True)
+        elif is_reviewable(vn, job_id):
+            c1, c2, c3 = st.columns(3)
+            if c1.button("✕ Rechazar", key=f"ag_reject_{k}", width="stretch"):
+                send_decision("reject", job_id=job_id, vn=vn)
+            if c2.button("↻ Cambios", key=f"ag_changes_{k}", width="stretch"):
+                st.session_state[f"ag_chg_open_{k}"] = not st.session_state.get(f"ag_chg_open_{k}", False)
+                st.rerun()
+            if c3.button("✓ Aprobar", key=f"ag_approve_{k}", type="primary", width="stretch"):
+                send_decision("approve_final", job_id=job_id, vn=vn)
+            if st.session_state.get(f"ag_chg_open_{k}"):
+                with st.form(f"ag_chg_form_{k}"):
+                    note = st.text_area("Cambios", placeholder="Qué debe corregirse…", label_visibility="collapsed",
+                                        key=f"ag_chg_note_{k}")
+                    if st.form_submit_button("Enviar cambios", type="primary", width="stretch"):
+                        if note.strip():
+                            st.session_state[f"ag_chg_open_{k}"] = False
+                            send_decision("request_changes", note, job_id=job_id, vn=vn)
+                        else:
+                            st.error("Escribe los cambios.")
+        elif not decision_action(vn, job_id):
+            ve = vinfo(vn, job_id).get("veredicto_efectivo") or "sin veredicto"
+            st.caption(f"Sin decisión disponible: veredicto {ve}.")
+        if st.button("Abrir en Studio", key=f"ag_open_{k}", width="stretch"):
+            st.session_state.jid = job_id
+            st.session_state.sel_ver = vn
+            st.session_state.tab = "Studio"
+            st.session_state.compare = False
+            st.session_state.focus = False
+            st.rerun()
+
+def render_agenda():
+    by_day, unplanned = agenda_index()
+    today = today_local()
+    if "ag_day" not in st.session_state:
+        st.session_state.ag_day = today
+    with st.container(key="ag_quick"):
+        q1, q2, q3 = st.columns([1, 1, 1.3])
+    q4 = st.container()
+    if q1.button("Hoy", key="ag_today", width="stretch"):
+        st.session_state.ag_day = today
+    if q2.button("Mañana", key="ag_tomorrow", width="stretch"):
+        st.session_state.ag_day = today + timedelta(days=1)
+    if q3.button("Próx. viernes", key="ag_friday", width="stretch"):
+        st.session_state.ag_day = next_weekday(today + timedelta(days=1), 4)
+    picked = q4.date_input("Día", value=st.session_state.ag_day, key=f"ag_date_{st.session_state.ag_day}",
+                           label_visibility="collapsed", format="DD/MM/YYYY")
+    if picked != st.session_state.ag_day:
+        st.session_state.ag_day = picked
+        st.rerun()
+    day = st.session_state.ag_day
+    monday = day - timedelta(days=day.weekday())
+    week = [monday + timedelta(days=i) for i in range(7)]
+    labels = {day_label(d, len(by_day.get(d, []))): d for d in week}
+    chosen = st.pills("Semana", list(labels), default=day_label(day, len(by_day.get(day, []))),
+                      key=f"ag_week_{day}", label_visibility="collapsed")
+    if chosen and labels.get(chosen) != day:
+        st.session_state.ag_day = labels[chosen]
+        st.rerun()
+
+    items = by_day.get(day, [])
+    pending = sum(1 for j, _ in items for vn in agenda_versions(j) if is_reviewable(vn, j))
+    approved = sum(1 for j, _ in items for vn in agenda_versions(j) if decision_action(vn, j) == "approve_final")
+    st.markdown(f"<div class='pipe-title'>{esc(day_label(day))} · {len(items)} propuesta(s) · "
+                f"{pending} por decidir · {approved} aprobada(s)</div>", unsafe_allow_html=True)
+    render_notice()
+    if not items:
+        st.info("No hay propuestas planificadas para este día.")
+    cards = [(j, p, vn) for j, p in items for vn in agenda_versions(j)]
+    for i in range(0, len(cards), 2):
+        cols = st.columns(2)
+        for col, (j, p, vn) in zip(cols, cards[i:i + 2]):
+            with col:
+                render_agenda_card(j, p, vn)
+    if unplanned:
+        with st.expander(f"Sin fecha en la agenda · {len(unplanned)} job(s)"):
+            st.caption("Estos jobs no tienen plan.json; Muse debe asignarles fecha para que aparezcan en un día.")
+            st.write(", ".join(unplanned))
+
+
 # ───────────────────────── tabs ─────────────────────────
 TAB = st.session_state.tab
 if TAB == "Studio":
@@ -1301,6 +1471,9 @@ if TAB == "Studio":
             with insp:
                 with st.container(key="kv_insp"):
                     st.markdown(f"<div class='pipe-title'>Inspector</div>{inspector_html(sel)}", unsafe_allow_html=True)
+
+elif TAB == "Agenda":
+    render_agenda()
 
 elif TAB == "Queue":
     st.subheader("Queue")
