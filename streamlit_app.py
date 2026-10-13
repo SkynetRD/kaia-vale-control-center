@@ -24,7 +24,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v7.0"
+APP_VERSION = "v7.2"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -116,7 +116,8 @@ button[kind="primary"]:hover{background:#7c4cf0!important}
 video{max-height:calc(100vh - 300px)!important;background:#05060a!important;border-radius:10px}
 .st-key-kv_focus [data-testid="stImage"] img,.st-key-kv_focus video{max-height:calc(100vh - 110px)!important}
 /* agenda cards: smaller media so several proposals fit on screen */
-[class*="st-key-ag_card_"] [data-testid="stImage"] img,[class*="st-key-ag_card_"] video{max-height:46vh!important}
+[class*="st-key-ag_card_"] [data-testid="stImage"] img,[class*="st-key-ag_card_"] video,[class*="st-key-na_card_"] [data-testid="stImage"] img{max-height:46vh!important}
+[class*="st-key-na_auth_"] [data-testid="stImage"] img{max-height:160px!important}
 /* review / decision */
 .review{margin-bottom:8px;border:1px solid rgba(139,92,246,.55);background:linear-gradient(90deg,rgba(139,92,246,.1),rgba(34,211,238,.04));border-radius:12px;padding:9px 12px;color:#ddd9ff;font-size:.8rem}
 .review.green{border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.07);color:#c9f8e2}
@@ -148,9 +149,12 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 .st-key-kv_decide [data-testid="stHorizontalBlock"],.st-key-kv_tools [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important}
 .st-key-kv_decide [data-testid="stColumn"],.st-key-kv_tools [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
 .st-key-kv_decide button{padding:0 4px!important;font-size:.8rem!important}
-.st-key-ag_quick [data-testid="stHorizontalBlock"],[class*="st-key-ag_card_"] [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important}
-.st-key-ag_quick [data-testid="stColumn"],[class*="st-key-ag_card_"] [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
-.st-key-ag_quick button,[class*="st-key-ag_card_"] button{padding:0 4px!important;font-size:.78rem!important}
+.st-key-ag_quick [data-testid="stHorizontalBlock"],[class*="st-key-ag_card_"] [data-testid="stHorizontalBlock"],[class*="st-key-na_card_"] [data-testid="stHorizontalBlock"],[class*="st-key-na_auth_"] [data-testid="stHorizontalBlock"],[class*="st-key-na_unpl_row_"] [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.5rem!important;align-items:center}
+[class*="st-key-na_unpl_row_"] [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
+.st-key-ag_quick [data-testid="stColumn"],[class*="st-key-ag_card_"] [data-testid="stColumn"],[class*="st-key-na_card_"] [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
+[class*="st-key-na_auth_"] [data-testid="stColumn"]:first-child{flex:0 0 30%!important;min-width:0!important}
+[class*="st-key-na_auth_"] [data-testid="stColumn"]:last-child{flex:1 1 0!important;min-width:0!important}
+.st-key-ag_quick button,[class*="st-key-ag_card_"] button,[class*="st-key-na_card_"] button{padding:0 4px!important;font-size:.78rem!important}
 [data-testid="stImage"] img,video{max-height:58vh!important}
 .livebar{position:sticky;bottom:4px;z-index:20}}
 </style>""", unsafe_allow_html=True)
@@ -200,6 +204,18 @@ def _dir(path):
         return None
     return {e["name"]: {"sha": e.get("sha"), "path": e.get("path"), "size": e.get("size", 0)}
             for e in data if isinstance(e, dict) and e.get("type") == "file" and e.get("name")}
+
+@st.cache_data(ttl=20, show_spinner=False, max_entries=50)
+def gh_subdirs(path):
+    """Names of subdirectories of path; [] if missing or on error."""
+    code, r = _get(path, H_JSON)
+    if code != 200:
+        return []
+    try:
+        data = r.json()
+    except ValueError:
+        return []
+    return sorted(e["name"] for e in data if isinstance(data, list) and isinstance(e, dict) and e.get("type") == "dir" and e.get("name"))
 
 @st.cache_data(ttl=20, show_spinner=False, max_entries=300)
 def gh_dir(path):
@@ -632,6 +648,25 @@ def is_reviewable(vn, job_id=None):
     return (vinfo(vn, job_id).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
             and not is_decided(vn, job_id) and not inflight_for(vn, job_id))
 
+def is_superseded(vn, job_id=None):
+    """A READY version is stale when a later version of the same job is already READY or approved."""
+    vs = [v["version"] for v in job_versions(job_id or jid)]
+    if vn not in vs:
+        return False
+    for later in vs[vs.index(vn) + 1:]:
+        if decision_action(later, job_id) == "approve_final" or vinfo(later, job_id).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW":
+            return True
+    return False
+
+def pending_reviews():
+    """[(job_id, vn)] Elvin must approve/reject: READY, undecided, not superseded by a later version."""
+    out = []
+    for j in jobs:
+        for v in job_versions(j["job_id"]):
+            if is_reviewable(v["version"], j["job_id"]) and not is_superseded(v["version"], j["job_id"]):
+                out.append((j["job_id"], v["version"]))
+    return out
+
 CUR_PEND = is_reviewable(cur)
 CUR_INFLIGHT = bool(inflight_for(cur))
 CUR_DECISION = decision_action(cur)
@@ -684,9 +719,9 @@ st.markdown(
     unsafe_allow_html=True)
 with st.container(key="kv_nav"):
     nav = st.columns([.72, .72, .72, .72, 4.6, .6])
-    _n_review = sum(1 for _j in jobs for _v in job_versions(_j["job_id"]) if is_reviewable(_v["version"], _j["job_id"]))
+    _n_review = len(pending_reviews())
     for i, name in enumerate(("Studio", "Agenda", "Queue", "Model")):
-        label = f"{name} · {_n_review}" if name == "Agenda" and _n_review else name
+        label = f"Agenda {_n_review}" if name == "Agenda" and _n_review else name
         if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
             st.session_state.tab = name
             st.session_state.compare = False
@@ -847,7 +882,7 @@ def stage_data():
     stages = [("Brief", has or s == "GENERATING"),
               ("Generate", has and not generating),
               ("Muse QC", bool(vd)),
-              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "READY_FOR_ELVIN_REVIEW", "APROBADO")),
+              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "READY_FOR_ELVIN_REVIEW", "APROBADO") or decision_action(cur) == "approve_final"),
               ("Elvin", is_decided(cur)),
               ("Publish", published)]
     if published:
@@ -1206,24 +1241,27 @@ def _proposal_when(proposal, plan):
     return dt if dt > datetime.now(LOCAL_TZ) else None
 
 def _apply_publish_defaults(targets, proposal):
-    """Prefill the form once per job|version: platform/format/caption/time from Muse's proposal, else the plan."""
+    """Prefill platform/format/caption/time from Muse's proposal, else the plan.
+    Re-applied whenever Streamlit dropped the widget state (e.g. after visiting another tab),
+    so the form never silently falls back to the first format / "Ahora"."""
     ctx = f"{jid}|{sel}"
-    if st.session_state.get("pub_ctx") == ctx:
-        return
-    for k in ("pub_platform", "pub_operation", "pub_caption", "pub_when", "pub_day", "pub_time", "pub_confirm"):
-        st.session_state.pop(k, None)
-    st.session_state.pub_ctx = ctx
+    if st.session_state.get("pub_ctx") != ctx:
+        for k in ("pub_platform", "pub_operation", "pub_caption", "pub_when", "pub_day", "pub_time", "pub_confirm"):
+            st.session_state.pop(k, None)
+        st.session_state.pub_ctx = ctx
     plan = job_plan(jid)
     plats = targets.get("platforms") or {}
     platform = proposal.get("platform") or plan.get("platform")
-    if platform in plats:
+    if platform in plats and "pub_platform" not in st.session_state:
         st.session_state.pub_platform = platform
-        operation = proposal.get("operation") or plan.get("operation")
-        if operation in plats[platform].get("operations", []):
-            st.session_state.pub_operation = operation
-    st.session_state.pub_caption = str(proposal.get("caption") or "")
+    operation = proposal.get("operation") or plan.get("operation")
+    cur_plat = st.session_state.get("pub_platform", platform)
+    if cur_plat in plats and operation in plats[cur_plat].get("operations", []) and "pub_operation" not in st.session_state:
+        st.session_state.pub_operation = operation
+    if "pub_caption" not in st.session_state:
+        st.session_state.pub_caption = str(proposal.get("caption") or "")
     when = _proposal_when(proposal, plan)
-    if when:
+    if when and "pub_when" not in st.session_state:
         st.session_state.pub_when = "Programar"
         st.session_state.pub_day = when.date()
         st.session_state.pub_time = when.time().replace(second=0, microsecond=0, tzinfo=None)
@@ -1339,6 +1377,14 @@ def agenda_index():
             by_day.setdefault(plan["_date"], []).append((jid_, plan))
         elif as_list(j.get("versions")):
             unplanned.append(jid_)
+    # pieces Muse already planned but not yet generated are not in snapshot.json: read them from jobs/
+    known = {j["job_id"] for j in jobs}
+    for name in gh_subdirs("jobs"):
+        if name in known:
+            continue
+        plan = job_plan(name)
+        if plan:
+            by_day.setdefault(plan["_date"], []).append((name, plan))
     for items in by_day.values():
         items.sort(key=lambda it: (str(it[1].get("slot") or "99:99"), it[0]))
     return by_day, unplanned
@@ -1349,6 +1395,20 @@ def _qc_line(vn, job_id):
     if not rows or all(ok is None for ok, _ in rows.values()):
         return "QC sin datos"
     return "QC: falla " + ", ".join(fails) if fails else "QC: todo OK"
+
+def render_plan_card(job_id, plan):
+    """Planned piece with no render yet."""
+    with st.container(border=True, key=f"ag_plan_{job_id}"):
+        title = plan.get("title") or job_id
+        where = " · ".join(x for x in (plan.get("slot"), plan.get("platform"),
+                                       OP_LABELS.get(plan.get("operation"), plan.get("operation"))) if x)
+        st.markdown(f"<div class='ins-head'><b>{esc(title)}</b><span class='badge'>En producción</span></div>", unsafe_allow_html=True)
+        if where:
+            st.caption(where)
+        if plan.get("brief"):
+            st.markdown(f"<div class='find'>{esc(str(plan.get('brief'))[:220])}</div>", unsafe_allow_html=True)
+        stt = as_dict(gh_json(f"jobs/{job_id}/state.json", {}))
+        st.caption(stt.get("detail") or "Muse todavía no generó la imagen. Aparecerá aquí cuando pase la revisión.")
 
 def render_agenda_card(job_id, plan, vn, kp="ag"):
     with st.container(border=True, key=f"{kp}_card_{job_id}_{vn}"):
@@ -1393,51 +1453,96 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
             st.session_state.focus = False
             st.rerun()
 
+def _pub_summary(job_id, vn, plan):
+    """(format label, when label, caption preview) from Muse's proposal, else the plan."""
+    prop = vjson(vn, "publish_proposal.json", job_id)
+    op = prop.get("operation") or plan.get("operation")
+    when = prop.get("scheduled_for") or (f"{plan.get('planned_for')}T{plan.get('slot')}" if plan.get("planned_for") else "")
+    try:
+        dt = datetime.fromisoformat(str(when))
+        when_lbl = f"{day_label(dt.date())} {dt.strftime('%H:%M')}"
+    except ValueError:
+        when_lbl = "sin hora"
+    cap = str(prop.get("caption") or "").strip()
+    cap_lbl = (cap[:90] + ("…" if len(cap) > 90 else "")) if cap else ("sin caption (Story)" if op == "story" else "sin caption propuesto")
+    return OP_LABELS.get(op, op or "formato sin definir"), when_lbl, cap_lbl, bool(prop)
+
 def needs_elvin():
-    """(to_review, to_authorize): versions waiting on Elvin across all jobs.
-    to_review: READY_FOR_ELVIN_REVIEW without decision. to_authorize: approved, publishing enabled, never authorized."""
+    """(to_review, to_authorize, approved_unplanned).
+    to_review: READY, undecided, not superseded. to_authorize: approved + planned (plan.json or Muse proposal),
+    publishing enabled, never authorized/published. approved_unplanned: approved without any publishing plan."""
     enabled, _, _ = publish_caps()
-    review, authorize = [], []
+    review, authorize, unplanned = [], [], []
+    pend = set(pending_reviews())
     for j in jobs:
         jid_ = j["job_id"]
         plan = job_plan(jid_)
+        published = bool(gh_json(f"jobs/{jid_}/published.json", {}))
         for v in job_versions(jid_):
             vn = v["version"]
-            if is_reviewable(vn, jid_):
+            if (jid_, vn) in pend:
                 review.append((jid_, plan, vn))
-            elif enabled and decision_action(vn, jid_) == "approve_final" and not inflight_for(vn, jid_):
-                if not any(r.get("status") in PUB_ACTIVE | {"executed"} for r in publish_records(vn, jid_)):
+            elif enabled and not published and decision_action(vn, jid_) == "approve_final" and not inflight_for(vn, jid_):
+                if any(r.get("status") in PUB_ACTIVE | {"executed"} for r in publish_records(vn, jid_)):
+                    continue
+                if plan or vjson(vn, "publish_proposal.json", jid_):
                     authorize.append((jid_, plan, vn))
+                else:
+                    unplanned.append((jid_, plan, vn))
     key = lambda it: (str(it[1].get("planned_for") or "9999"), str(it[1].get("slot") or "99:99"), it[0])
-    return sorted(review, key=key), sorted(authorize, key=key)
+    return sorted(review, key=key), sorted(authorize, key=key), unplanned
+
+def _go_studio(j, vn):
+    st.session_state.jid = j
+    st.session_state.sel_ver = vn
+    st.session_state.tab = "Studio"
+    st.session_state.compare = False
+    st.session_state.focus = False
+    st.rerun()
 
 def render_needs_elvin():
-    review, authorize = needs_elvin()
+    review, authorize, unplanned = needs_elvin()
     if not review and not authorize:
         st.success("Nada espera por ti ahora mismo. Muse sigue produciendo.")
-        return
-    with st.container(key="ag_needs"):
-        st.markdown(f"<div class='pipe-title'>Necesita tu aprobación · {len(review)} por aprobar · "
-                    f"{len(authorize)} por autorizar publicación</div>", unsafe_allow_html=True)
-        for i in range(0, len(review), 2):
-            cols = st.columns(2)
-            for col, (j, p, vn) in zip(cols, review[i:i + 2]):
-                with col:
-                    if p.get("planned_for"):
-                        st.caption(f"Para {day_label(p['_date'])}")
-                    render_agenda_card(j, p, vn, kp="na")
-        for j, p, vn in authorize:
-            c1, c2 = st.columns([3, 1.2])
-            when = f" · {day_label(p['_date'])} {p.get('slot') or ''}" if p.get("planned_for") else ""
-            c1.markdown(f"<div class='find'><b>{esc(p.get('title') or j)} · {esc(vn)}</b> aprobada{esc(when)} · "
-                        "falta autorizar la publicación</div>", unsafe_allow_html=True)
-            if c2.button("Autorizar", key=f"na_pub_{j}_{vn}", width="stretch"):
-                st.session_state.jid = j
-                st.session_state.sel_ver = vn
-                st.session_state.tab = "Studio"
-                st.session_state.compare = False
-                st.session_state.focus = False
-                st.rerun()
+    else:
+        with st.container(key="ag_needs"):
+            st.markdown(f"<div class='pipe-title'>Necesita tu aprobación · {len(review)} por aprobar · "
+                        f"{len(authorize)} por autorizar publicación</div>", unsafe_allow_html=True)
+            for i in range(0, len(review), 2):
+                cols = st.columns(2)
+                for col, (j, p, vn) in zip(cols, review[i:i + 2]):
+                    with col:
+                        if p.get("planned_for"):
+                            st.caption(f"Para {day_label(p['_date'])}")
+                        render_agenda_card(j, p, vn, kp="na")
+            for j, p, vn in authorize:
+                fmt, when, cap, has_prop = _pub_summary(j, vn, p)
+                with st.container(border=True, key=f"na_auth_{j}_{vn}"):
+                    c1, c2 = st.columns([1, 2.6])
+                    with c1:
+                        typ, info = asset_info(vn, j)
+                        data = blob(info, small=False) if info and typ == "image" else None
+                        if data is not None:
+                            st.image(data, width="stretch")
+                        else:
+                            st.caption("video" if typ == "video" else "sin vista previa")
+                    with c2:
+                        st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b>"
+                                    f"<span class='badge green'>Aprobada</span></div>"
+                                    f"<div class='find'><b>{esc(fmt)}</b> · {esc(when)}<br>{esc(cap)}</div>", unsafe_allow_html=True)
+                        if not has_prop:
+                            st.caption("Muse aún no propuso caption: puedes escribirlo tú o esperar su propuesta.")
+                        if st.button("Revisar y autorizar", key=f"na_pub_{j}_{vn}", type="primary", width="stretch"):
+                            _go_studio(j, vn)
+    if unplanned:
+        with st.expander(f"Aprobadas sin plan de publicación · {len(unplanned)}"):
+            st.caption("No tienen fecha ni formato. Muse debe planificarlas o marcarlas como ya publicadas; "
+                       "hasta entonces no se piden autorizar.")
+            for j, p, vn in unplanned:
+                c1, c2 = st.container(key=f"na_unpl_row_{j}_{vn}").columns([3, 1.3])
+                c1.markdown(f"<div class='find'><b>{esc(j)} · {esc(vn)}</b></div>", unsafe_allow_html=True)
+                if c2.button("Ver", key=f"na_unpl_{j}_{vn}", width="stretch"):
+                    _go_studio(j, vn)
 
 def render_agenda():
     render_needs_elvin()
@@ -1477,12 +1582,15 @@ def render_agenda():
     render_notice()
     if not items:
         st.info("No hay propuestas planificadas para este día.")
-    cards = [(j, p, vn) for j, p in items for vn in agenda_versions(j)]
+    cards = [(j, p, vn) for j, p in items for vn in (agenda_versions(j) or [None])]
     for i in range(0, len(cards), 2):
         cols = st.columns(2)
         for col, (j, p, vn) in zip(cols, cards[i:i + 2]):
             with col:
-                render_agenda_card(j, p, vn)
+                if vn:
+                    render_agenda_card(j, p, vn)
+                else:
+                    render_plan_card(j, p)
     if unplanned:
         with st.expander(f"Sin fecha en la agenda · {len(unplanned)} job(s)"):
             st.caption("Estos jobs no tienen plan.json; Muse debe asignarles fecha para que aparezcan en un día.")
@@ -1579,7 +1687,7 @@ elif TAB == "Queue":
     events = gh_json(f"jobs/{jid}/events.json", {})
     lines = as_list(events.get("lines")) if isinstance(events, dict) else []
     if lines:
-        st.code("\n".join(str(x) for x in lines[-80:]))
+        st.code("\n".join(str(x) for x in lines[-80:]), language=None, wrap_lines=True)
     else:
         rows = []
         for v in versions:
