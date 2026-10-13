@@ -1,4 +1,4 @@
-"""KAIA VALE — Mission Control v6.7.
+"""KAIA VALE — Mission Control v6.8.
 Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
 decision records only gain additive fields (asset_file, asset_sha = SHA-256 of the asset bytes, asset_git_sha).
 - Asset approvals only through job/version decisions: Muse's yes/no channel can no
@@ -10,6 +10,8 @@ decision records only gain additive fields (asset_file, asset_sha = SHA-256 of t
 - Default job = one waiting for Elvin, else the most recently updated.
 - v6.7: asset_sha is SHA-256 of the asset bytes (what the backend verifies); non-protocol
   decision records (e.g. chat approvals) are shown as not valid, never as approved.
+- v6.8: QC panel reads the supervisor's current visual_coverage (Spanish groups); versions
+  without decision buttons explain why (CORREGIR / ESCALAR / not synced).
 """
 import base64, hashlib, hmac, html, inspect, json, re, time, uuid
 from datetime import datetime, timezone
@@ -18,7 +20,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v6.7"
+APP_VERSION = "v6.8"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -854,11 +856,53 @@ def _is_fail(estado):
     e = str(estado or "").strip().upper()
     return e.startswith("FAIL") or e.startswith("FALLA")
 
+# Supervisor visual_coverage groups (Spanish keys, current bus) -> inspector rows.
+# Each row: (label, [(group, subkey|None = whole group, exclude subkeys)]).
+QC_ROWS = (
+    ("Identity", [("identidad", None, ())]),
+    ("Anatomy", [("anatomia", None, ("manos_dedos",)), ("continuidad_corporal", None, ())]),
+    ("Skin", [("piel", None, ())]),
+    ("Hands", [("anatomia", "manos_dedos", ())]),
+    ("Clothing", [("ropa", None, ())]),
+    ("Scene", [("escena", None, ())]),
+)
+QC_NOT_EVALUATED = {"NOT_VISIBLE", "NOT_APPLICABLE", "NO_VISIBLE", "NO_APLICA", ""}
+
+def _qc_from_coverage(cov):
+    """{label: (True|False|None, detail|None)} from visual_coverage; {} if absent."""
+    out = {}
+    for label, sources in QC_ROWS:
+        items = []
+        for group, sub, exclude in sources:
+            g = cov.get(group)
+            if not isinstance(g, dict):
+                continue
+            if sub:
+                if isinstance(g.get(sub), dict):
+                    items.append((sub, g[sub]))
+            else:
+                items += [(k, v) for k, v in g.items() if k not in exclude and isinstance(v, dict)]
+        evaluated = [(k, v) for k, v in items if str(v.get("estado", "")).upper() not in QC_NOT_EVALUATED]
+        if not evaluated:
+            out[label] = (None, None)
+            continue
+        fails = [(k, v) for k, v in evaluated if _is_fail(v.get("estado"))]
+        detail = "; ".join(f"{k.replace('_', ' ')}: {str(v.get('evidencia') or '').strip()}" for k, v in fails) or None
+        out[label] = (not fails, detail)
+    return out
+
 def qc_status(vd):
     """{cat: (True ok | False fail | None sin veredicto, detalle|None)}.
-    Hands: the current bus has no hands pass/fail; anatomy_review.manos is a free-text
-    finding, so it is shown as text. visual_coverage is kept only for legacy verdicts."""
+    Current verdicts: visual_coverage with Spanish groups (identidad, anatomia, piel, ropa,
+    escena, continuidad_corporal). Legacy verdicts: English keys / *_review dicts."""
     cov = as_dict(vd.get("visual_coverage"))
+    if any(k in cov for k in ("identidad", "anatomia", "piel", "ropa", "escena")):
+        out = _qc_from_coverage(cov)
+        tv = as_dict(vd.get("technical_validation"))
+        if tv.get("estado"):
+            d = as_dict(tv.get("detalle")).get("resumen") if isinstance(tv.get("detalle"), dict) else tv.get("detalle")
+            out["Technical"] = (not _is_fail(tv.get("estado")), str(d).strip() if _is_fail(tv.get("estado")) and d else None)
+        return out
     anatomy = vd.get("anatomy_review")
     rich = {"identity": vd.get("identity_review"), "anatomy": anatomy, "skin": vd.get("skin_review")}
     out = {}
@@ -984,6 +1028,14 @@ def render_decision_block():
                         send_decision("request_changes", note)
                     else:
                         st.error("Escribe los cambios.")
+    else:
+        # Explain why there are no decision buttons instead of showing nothing.
+        ve = vinfo(sel).get("veredicto_efectivo") or "sin veredicto"
+        why = {"CORREGIR": "el supervisor pidió correcciones; Muse debe generar una versión corregida",
+               "ESCALAR": "el supervisor escaló el caso; Muse debe resolverlo o explicarlo",
+               "READY_PENDING_PUSH": "la versión todavía no terminó de sincronizarse"}.get(ve, "la versión no está lista para tu revisión")
+        st.markdown(f"<div class='review warn'><b>Sin decisión disponible</b> · {esc(sel)}: veredicto <b>{esc(ve)}</b> — {esc(why)}. "
+                    "Los botones aparecen cuando el supervisor la deja en READY_FOR_ELVIN_REVIEW.</div>", unsafe_allow_html=True)
 
 
 # ───────────────────────── tabs ─────────────────────────
