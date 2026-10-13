@@ -858,6 +858,9 @@ def stage_data():
         return stages, None, 4
     if CUR_DECISION == "approve_final":
         return stages, 5, None
+    if s == "ESCALATED_INTERNAL" or ve in ("CORREGIR", "ESCALAR"):
+        # No espera a Elvin: el supervisor la detuvo y Muse/Elvin deben resolverlo antes.
+        return stages, None, 3
     return stages, next((i for i, (_, d) in enumerate(stages) if not d), None), None
 
 def normalize_findings(vd):
