@@ -1,10 +1,11 @@
-"""KAIA VALE — Mission Control v6.1.
+"""KAIA VALE — Mission Control v6.2.
 UI-only rewrite. Keeps GitHub bus, decision protocol and backend contracts unchanged.
 """
 import base64, json, time, uuid
 from datetime import datetime, timezone
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Kaia Vale · Mission Control", layout="wide", initial_sidebar_state="collapsed")
 
@@ -95,6 +96,11 @@ if not st.session_state.auth:
         else: st.error("Password incorrecto.")
     st.stop()
 
+# Non-blocking refresh. v6.1 used time.sleep(30) at the end of every run, which
+# kept the Streamlit session busy and made clicks feel delayed/unresponsive.
+# st_autorefresh schedules a browser-side rerun without blocking widget events.
+st_autorefresh(interval=30_000, limit=None, key="mission_control_refresh")
+
 snap=gh_json("snapshot.json",{"jobs":[]}); jobs=snap.get("jobs",[])
 if not jobs: st.info("Sin jobs sincronizados."); st.stop()
 job_ids=[j.get("job_id") for j in jobs if j.get("job_id")]
@@ -143,7 +149,13 @@ for i,name in enumerate(("Studio","Queue","Model")):
     if nav[i].button(name,key=f"nav_{name}",type="primary" if st.session_state.tab==name else "secondary",use_container_width=True):
         st.session_state.tab=name; st.session_state.compare=False; st.session_state.focus=False; st.rerun()
 chosen=nav[3].selectbox("Job",job_ids,index=job_ids.index(jid),label_visibility="collapsed")
-if chosen!=jid: st.session_state.jid=chosen; st.session_state.sel_ver=None; st.rerun()
+if chosen!=jid:
+    st.session_state.jid=chosen
+    st.session_state.sel_ver=None
+    st.session_state.compare=False
+    st.session_state.focus=False
+    st.session_state.change_open=False
+    st.rerun()
 
 # Muse yes/no blocker
 if ms.get("status")=="BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
@@ -166,8 +178,8 @@ def asset_path(vn):
 def verdict(vn): return gh_json(f"jobs/{jid}/versions/{vn}/verdict.json",{}) or {}
 def meta(vn): return gh_json(f"jobs/{jid}/versions/{vn}/meta.json",{}) or {}
 def send_decision(action,note=""):
-    did=str(uuid.uuid4()); obj={"decision_id":did,"job_id":jid,"version":cur,"action":action,"timestamp":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"note":note.strip()}
-    ok,d=gh_put_json(f"decisions/inbox/{did}.json",obj,f"decision {action} {jid} {cur}")
+    did=str(uuid.uuid4()); obj={"decision_id":did,"job_id":jid,"version":sel,"action":action,"timestamp":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"note":note.strip()}
+    ok,d=gh_put_json(f"decisions/inbox/{did}.json",obj,f"decision {action} {jid} {sel}")
     if ok: st.success(f"Decisión enviada · {did[:8]} · ACK esperado en ~1 min.")
     else: st.error(f"No se pudo enviar: {d}")
 
@@ -303,6 +315,4 @@ elif TAB=="Model":
         if not active: st.caption("Sin reglas activas sincronizadas.")
         for r in active: st.markdown(f"**{r.get('id','—')}** — {r.get('regla','')}")
 
-st.caption("Mission Control v6.1 · refined workspace · auto-refresh 30s")
-time.sleep(30)
-st.rerun()
+st.caption("Mission Control v6.2 · responsive controls · non-blocking auto-refresh 30s")
