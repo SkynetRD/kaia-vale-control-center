@@ -1,16 +1,17 @@
-"""Kaia Vale Control Center — AI Operations UI (rediseño v3 2026-10-12).
+"""Kaia Vale Control Center — v4 "Neon Studio" (2026-10-12).
 
-Estética inspirada en apps de generación IA (PrimeIA/Higgsfield):
-visual-primero, galería de versiones, barra de decisión fija, navegación
-móvil nativa, responsive PC/móvil.
+Rediseño creativo inspirado en apps de generación IA (Higgsfield/PrimeIA):
+- Identidad neón: violeta eléctrico + cian sobre negro profundo
+- Héroe cinematográfico: el render actual como protagonista (base64, overlay)
+- Filmstrip horizontal con scroll-snap (thumbnails base64 en un solo bloque)
+- Anillo de progreso CSS para métricas, glassmorphism, glow
+- Lenguaje de "AI studio": Renders, Queue, Verdict, Model stats
 
-SOLO frontend/UX. No toca reviewer-loop, sincronización, decisiones,
-seguridad ni lógica existente.
-
-Secretos (Streamlit Cloud -> Settings -> Secrets, NUNCA en el código):
-  DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO
+SOLO frontend/UX. Sin cambios en reviewer-loop, sync, decisiones ni seguridad.
+Secretos: DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO (Streamlit Secrets).
 """
 import base64
+import io
 import json
 import time
 import uuid
@@ -19,189 +20,203 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Kaia Vale · Ops Center", layout="wide",
+st.set_page_config(page_title="Kaia Vale · Studio", layout="wide",
                    initial_sidebar_state="collapsed")
 
-# ---------------- secretos ----------------
 try:
     PASSWORD = st.secrets["DASHBOARD_PASSWORD"]
     TOKEN = st.secrets["GITHUB_TOKEN"]
     REPO = st.secrets["SYNC_REPO"]
 except Exception:
-    st.error("Faltan secretos: configura DASHBOARD_PASSWORD, GITHUB_TOKEN y SYNC_REPO en Settings → Secrets.")
+    st.error("Faltan secretos: DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO en Settings → Secrets.")
     st.stop()
 
 API = f"https://api.github.com/repos/{REPO}/contents"
 H = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.raw"}
 
-# ---------------- estado de navegación ----------------
 if "tab" not in st.session_state:
-    st.session_state.tab = "home"
+    st.session_state.tab = "studio"
 if "sel_ver" not in st.session_state:
     st.session_state.sel_ver = None
 TAB = st.session_state.tab
-if TAB not in ("home", "gallery", "activity", "learning"):
-    TAB = "home"
-    st.session_state.tab = "home"
+if TAB not in ("studio", "renders", "queue", "model"):
+    TAB = "studio"
+    st.session_state.tab = "studio"
 
-# ---------------- CSS: app shell estilo IA ----------------
+# ---------------- CSS: Neon Studio ----------------
 st.markdown("""<style>
 :root{
-  --bg:#07090d; --surface:#0e131b; --surface2:#141b26; --surface3:#1a2230;
-  --border:rgba(255,255,255,.07); --border2:rgba(255,255,255,.12);
-  --text:#eef1f7; --muted:#8b94a7; --faint:#5b6373;
-  --accent:#d8a94e; --accent2:#f0c76a;
-  --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#6aa8ff; --violet:#a78bfa;
-  --r:16px; --r-sm:12px;
+  --bg:#050508; --surface:rgba(20,22,34,.72); --surface2:rgba(28,32,48,.72);
+  --border:rgba(139,92,246,.16); --border2:rgba(139,92,246,.32);
+  --text:#f2f3fa; --muted:#9aa0b8; --faint:#5d6379;
+  --violet:#8b5cf6; --violet2:#c4b5fd; --cyan:#22d3ee; --cyan2:#a5f3fc;
+  --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#6aa8ff;
+  --grad:linear-gradient(120deg,#8b5cf6,#22d3ee);
 }
 html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;}
 [data-testid="stHeader"],#MainMenu,footer{visibility:hidden;display:none;}
-.block-container{padding-top:.6rem;padding-bottom:8rem;max-width:1280px;}
+.block-container{padding-top:.4rem;padding-bottom:9rem;max-width:1280px;}
 h1,h2,h3{color:var(--text)!important;letter-spacing:-.02em;}
 .stCaption,small{color:var(--muted)!important;}
-*:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+/* fondo ambiental */
+[data-testid="stAppViewContainer"]:before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(700px 340px at 12% -4%,rgba(139,92,246,.14),transparent 60%),
+    radial-gradient(640px 320px at 88% 6%,rgba(34,211,238,.1),transparent 60%),
+    radial-gradient(900px 500px at 50% 110%,rgba(139,92,246,.08),transparent 60%);}
 
 /* ===== top bar ===== */
 .topbar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:10px;
-  padding:10px 4px;margin:-.6rem -1rem .8rem;
-  background:rgba(7,9,13,.88);backdrop-filter:blur(14px);
+  padding:10px 2px;margin:-.4rem -1rem .9rem;
+  background:rgba(5,5,8,.82);backdrop-filter:blur(16px);
   border-bottom:1px solid var(--border);}
-.topbar .logo{font-weight:800;font-size:1rem;letter-spacing:.06em;
-  background:linear-gradient(120deg,var(--accent2),var(--accent));
-  -webkit-background-clip:text;background-clip:text;color:transparent;white-space:nowrap;}
+.topbar .logo{font-weight:900;font-size:1.02rem;letter-spacing:.08em;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
 .topbar .spacer{flex:1;}
+.orb{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
+  font-size:.74rem;font-weight:800;letter-spacing:.06em;
+  background:var(--surface2);border:1px solid var(--border2);backdrop-filter:blur(8px);}
+.orb .d{width:9px;height:9px;border-radius:50%;}
+.orb.g{color:var(--green);} .orb.g .d{background:var(--green);box-shadow:0 0 12px var(--green);animation:bl 1.8s infinite;}
+.orb.a{color:var(--amber);} .orb.a .d{background:var(--amber);box-shadow:0 0 12px var(--amber);animation:bl 1.8s infinite;}
+.orb.b{color:var(--cyan);} .orb.b .d{background:var(--cyan);box-shadow:0 0 12px var(--cyan);animation:bl 1.8s infinite;}
+.orb.gr{color:var(--muted);} .orb.gr .d{background:var(--muted);}
+.orb.r{color:var(--red);} .orb.r .d{background:var(--red);box-shadow:0 0 12px var(--red);}
+@keyframes bl{0%,100%{opacity:.55;transform:scale(.88);}50%{opacity:1;transform:scale(1.12);}}
 
-/* ===== pills & badges ===== */
-.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;
-  font-size:.76rem;font-weight:700;letter-spacing:.05em;border:1px solid var(--border2);
-  background:var(--surface2);white-space:nowrap;}
-.pill .dot{width:8px;height:8px;border-radius:50%;background:currentColor;}
-.p-green{color:var(--green);border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.1);}
-.p-amber{color:var(--amber);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.1);}
-.p-red{color:var(--red);border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.1);}
-.p-blue{color:var(--blue);border-color:rgba(106,168,255,.35);background:rgba(106,168,255,.1);}
-.p-gold{color:var(--accent);border-color:rgba(216,169,78,.4);background:rgba(216,169,78,.12);}
-.p-gray{color:var(--muted);}
-.p-violet{color:var(--violet);border-color:rgba(167,139,250,.35);background:rgba(167,139,250,.1);}
-.pulse-dot{animation:pdot 1.6s ease-in-out infinite;}
-@keyframes pdot{0%,100%{opacity:.4;transform:scale(.85);}50%{opacity:1;transform:scale(1.1);}}
+/* ===== héroe cinematográfico ===== */
+.hero{position:relative;border-radius:22px;overflow:hidden;margin-bottom:14px;
+  border:1px solid var(--border2);background:#0a0a12;
+  box-shadow:0 24px 70px -18px rgba(139,92,246,.35);}
+.hero img{display:block;width:100%;max-height:58vh;object-fit:cover;object-position:center 22%;}
+.hero .shade{position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(5,5,8,.25) 0%,transparent 32%,transparent 52%,rgba(5,5,8,.92) 100%);}
+.hero .cap{position:absolute;left:0;right:0;bottom:0;padding:18px;}
+.hero .cap .v{font-size:1.5rem;font-weight:900;letter-spacing:-.02em;}
+.hero .cap .row{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;}
+.vbadge{display:inline-flex;align-items:center;padding:6px 14px;border-radius:999px;
+  font-size:.74rem;font-weight:800;letter-spacing:.06em;backdrop-filter:blur(8px);
+  border:1px solid var(--border2);background:rgba(10,10,18,.55);}
+.vbadge.gold{color:#f0c76a;border-color:rgba(240,199,106,.5);}
+.vbadge.green{color:var(--green);border-color:rgba(74,222,128,.5);}
+.vbadge.red{color:var(--red);border-color:rgba(248,113,113,.5);}
+.vbadge.blue{color:var(--cyan);border-color:rgba(34,211,238,.5);}
+.vbadge.gray{color:var(--muted);}
+.hero .meta-line{color:var(--muted);font-size:.8rem;margin-top:6px;}
 
-/* ===== hero ===== */
-.hero{position:relative;overflow:hidden;border-radius:20px;padding:22px;
-  background:linear-gradient(135deg,#151c28 0%,#0e1420 55%,#141019 100%);
-  border:1px solid var(--border2);margin-bottom:14px;}
-.hero:before{content:"";position:absolute;inset:0;pointer-events:none;
-  background:radial-gradient(600px 200px at 85% -20%,rgba(216,169,78,.16),transparent 60%);}
-.hero h2{margin:0 0 4px;font-size:1.5rem;}
-.hero .sub{color:var(--muted);font-size:.88rem;margin-bottom:12px;}
+/* ===== filmstrip ===== */
+.fstrip{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 12px;
+  scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;}
+.fstrip::-webkit-scrollbar{height:6px;}
+.fstrip::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+.fitem{flex:0 0 auto;scroll-snap-align:start;width:118px;cursor:pointer;}
+.fitem img{width:118px;height:158px;object-fit:cover;border-radius:12px;display:block;
+  border:2px solid transparent;transition:border-color .15s ease,transform .15s ease;}
+.fitem:hover img{transform:translateY(-2px);}
+.fitem.sel img{border-color:var(--violet);box-shadow:0 0 16px rgba(139,92,246,.5);}
+.fitem .fv{font-size:.68rem;font-weight:800;margin-top:5px;text-align:center;color:var(--muted);}
+.fitem.sel .fv{color:var(--violet2);}
+.sect{font-size:.78rem;font-weight:800;letter-spacing:.12em;color:var(--muted);
+  margin:18px 0 8px;text-transform:uppercase;}
 
-/* ===== cards ===== */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
-  padding:16px;margin-bottom:12px;}
-.card h4{margin:0 0 10px;font-size:.76rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);}
-.card.tappable{cursor:pointer;transition:transform .15s ease,border-color .15s ease;}
-.card.tappable:hover{border-color:var(--accent);transform:translateY(-1px);}
-.kv-big{font-size:1.7rem;font-weight:800;letter-spacing:-.02em;line-height:1.15;}
+/* ===== glass cards ===== */
+.gcard{background:var(--surface);border:1px solid var(--border);border-radius:18px;
+  padding:16px;margin-bottom:12px;backdrop-filter:blur(12px);}
+.gcard h4{margin:0 0 10px;font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);}
+.kv-big{font-size:1.7rem;font-weight:900;letter-spacing:-.02em;
+  background:linear-gradient(180deg,#fff,#c9cede);-webkit-background-clip:text;background-clip:text;color:transparent;}
 .kv-muted{color:var(--muted);font-size:.84rem;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
-@media(max-width:640px){.grid3{grid-template-columns:1fr 1fr;}.kv-big{font-size:1.4rem;}}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+@media(max-width:640px){.grid3{grid-template-columns:1fr 1fr;}.kv-big{font-size:1.35rem;}}
 
-/* ===== pipeline stepper ===== */
-.stepper{display:flex;align-items:center;gap:0;overflow-x:auto;padding:8px 2px;margin:4px 0;}
-.snode{flex:0 0 auto;min-width:96px;text-align:center;padding:10px 8px;border-radius:14px;
-  background:var(--surface2);border:1px solid var(--border);position:relative;}
-.snode .t{font-size:.7rem;font-weight:800;letter-spacing:.07em;}
-.snode .s{font-size:.64rem;color:var(--muted);margin-top:3px;}
-.snode.on{border-color:var(--accent);background:rgba(216,169,78,.1);}
-.snode.on .t{color:var(--accent);}
-.snode.done{border-color:rgba(74,222,128,.35);}
-.snode.done .t{color:var(--green);}
-.slink{flex:0 0 22px;height:2px;background:var(--border);}
-.slink.on{background:var(--accent);}
+/* ===== anillo de progreso ===== */
+.ring{--p:50;--c:var(--violet);width:92px;height:92px;border-radius:50%;flex:0 0 auto;
+  background:conic-gradient(var(--c) calc(var(--p)*1%),rgba(255,255,255,.08) 0);
+  display:flex;align-items:center;justify-content:center;position:relative;}
+.ring:before{content:"";position:absolute;inset:9px;border-radius:50%;background:#0b0b13;}
+.ring span{position:relative;font-weight:900;font-size:1.05rem;}
+.ringwrap{display:flex;align-items:center;gap:14px;}
 
-/* ===== gallery ===== */
-[data-testid="stImage"] img{border-radius:14px;}
-.gal-head{display:flex;align-items:baseline;gap:10px;margin:2px 0 12px;}
-.gcap{display:flex;align-items:center;gap:8px;margin:6px 0 2px;}
-.gcap .gver{font-weight:800;font-size:.9rem;}
+/* ===== queue stepper ===== */
+.qstep{display:flex;gap:12px;align-items:flex-start;padding:11px 2px;position:relative;}
+.qstep .n{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:.75rem;font-weight:800;background:var(--surface2);border:1px solid var(--border2);color:var(--muted);z-index:1;}
+.qstep:before{content:"";position:absolute;left:16px;top:44px;bottom:-6px;width:2px;background:var(--border);}
+.qstep:last-child:before{display:none;}
+.qstep.on .n{background:var(--grad);color:#0a0618;border:none;box-shadow:0 0 18px rgba(139,92,246,.6);}
+.qstep.done .n{border-color:var(--green);color:var(--green);}
+.qstep .t{font-weight:800;font-size:.92rem;}
+.qstep .s{font-size:.78rem;color:var(--muted);}
+.qstep.on .t{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
 
-/* ===== detail hero image ===== */
-.dhero{border-radius:18px;overflow:hidden;border:1px solid var(--border2);margin-bottom:12px;
-  background:var(--surface2);}
-.dhero img{width:100%;display:block;max-height:62vh;object-fit:contain;background:#000;}
-.spec{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}
-.spec .k{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
-.spec .v{font-weight:700;font-size:.92rem;margin-top:2px;}
+/* ===== verdict panel ===== */
+.verdict{position:relative;overflow:hidden;border-radius:22px;padding:22px;margin:16px 0;
+  border:1px solid rgba(240,199,106,.45);
+  background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(34,211,238,.07) 60%,rgba(240,199,106,.1));}
+.verdict:before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(420px 160px at 50% -20%,rgba(240,199,106,.22),transparent 65%);}
+.verdict h3{margin:0 0 4px;font-size:1.25rem;text-align:center;}
+.verdict .sub{text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:14px;}
 
 /* ===== timeline ===== */
 .tl{position:relative;padding-left:20px;}
-.tl:before{content:"";position:absolute;left:6px;top:8px;bottom:8px;width:2px;background:var(--border);}
+.tl:before{content:"";position:absolute;left:6px;top:8px;bottom:8px;width:2px;
+  background:linear-gradient(180deg,var(--violet),var(--cyan));opacity:.35;}
 .tl-ev{position:relative;padding:8px 0 8px 6px;}
 .tl-ev:before{content:"";position:absolute;left:-18px;top:14px;width:9px;height:9px;border-radius:50%;
-  background:var(--surface3);border:2px solid var(--muted);}
-.tl-ev.g:before{border-color:var(--green);} .tl-ev.a:before{border-color:var(--amber);}
-.tl-ev.r:before{border-color:var(--red);} .tl-ev.b:before{border-color:var(--blue);}
+  background:#0b0b13;border:2px solid var(--muted);}
+.tl-ev.g:before{border-color:var(--green);box-shadow:0 0 8px rgba(74,222,128,.6);}
+.tl-ev.a:before{border-color:var(--amber);}
+.tl-ev.r:before{border-color:var(--red);}
+.tl-ev.b:before{border-color:var(--cyan);}
 .tl-time{font-size:.7rem;color:var(--faint);font-variant-numeric:tabular-nums;}
 .tl-txt{font-size:.88rem;}
+.spec{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}
+.spec .k{font-size:.66rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);}
+.spec .v{font-weight:800;font-size:.92rem;margin-top:2px;}
 
-/* ===== bottom nav (mobile) / top nav (desktop) ===== */
+/* ===== nav ===== */
 .mnav{display:none;}
 @media(max-width:767px){
-  .mnav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:950;
-    background:rgba(10,13,19,.96);backdrop-filter:blur(14px);
-    border-top:1px solid var(--border2);
-    padding:6px 4px calc(8px + env(safe-area-inset-bottom));}
-  .mnav button{flex:1;background:none;border:none;color:var(--muted);font-size:.62rem;font-weight:700;
-    display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0;border-radius:10px;}
-  .mnav button .ic{font-size:1.25rem;line-height:1;}
-  .mnav button.on{color:var(--accent);}
+  .mnav{display:flex;position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:950;
+    background:rgba(14,16,26,.92);backdrop-filter:blur(18px);
+    border:1px solid var(--border2);border-radius:22px;padding:6px;
+    box-shadow:0 12px 40px rgba(0,0,0,.5);}
+  .mnav button{flex:1;background:none!important;border:none!important;color:var(--muted);
+    font-size:.6rem;font-weight:800;display:flex;flex-direction:column;align-items:center;gap:2px;
+    padding:9px 0;border-radius:16px;min-height:0;}
+  .mnav button .ic{font-size:1.3rem;line-height:1;}
+  .mnav button[kind="primary"]{background:var(--grad)!important;color:#0a0618!important;}
   .dnav{display:none;}
 }
 @media(min-width:768px){
-  .dnav{display:flex;gap:6px;margin-bottom:14px;}
+  .dnav{display:flex;gap:8px;margin-bottom:16px;}
   .dnav button{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
-    border-radius:999px;padding:9px 20px;font-weight:700;font-size:.85rem;}
-  .dnav button.on{background:rgba(216,169,78,.14);color:var(--accent);border-color:rgba(216,169,78,.5);}
+    border-radius:999px;padding:10px 22px;font-weight:800;font-size:.85rem;}
+  .dnav button[kind="primary"]{background:var(--grad);color:#0a0618;border:none;
+    box-shadow:0 6px 24px rgba(139,92,246,.4);}
 }
 
-/* ===== tarjeta de decisión ===== */
-.decide-card{background:linear-gradient(135deg,rgba(216,169,78,.14),rgba(216,169,78,.04));
-  border:1px solid rgba(216,169,78,.5);border-radius:18px;padding:18px;margin:14px 0;
-  text-align:center;}
-.decide-card .ttl{font-weight:800;font-size:1.05rem;letter-spacing:.05em;color:var(--accent);}
-
-/* ===== buttons ===== */
-.stButton>button{background:var(--surface3);color:var(--text);border:1px solid var(--border2);
-  border-radius:14px;min-height:52px;font-weight:700;font-size:.95rem;width:100%;
-  transition:transform .1s ease,border-color .15s ease;}
-.stButton>button:hover{border-color:var(--accent);color:var(--accent);}
+/* ===== botones ===== */
+.stButton>button{background:var(--surface2);color:var(--text);border:1px solid var(--border2);
+  border-radius:16px;min-height:54px;font-weight:800;font-size:.95rem;width:100%;}
+.stButton>button:hover{border-color:var(--violet);color:var(--violet2);}
 .stButton>button:active{transform:scale(.98);}
-.stButton>button[kind="primary"]{background:linear-gradient(135deg,var(--accent2),var(--accent));
-  color:#14100a;border:none;}
-.stButton>button[kind="primary"]:hover{filter:brightness(1.08);color:#14100a;}
-.btn-green>button{background:rgba(74,222,128,.14)!important;color:var(--green)!important;
-  border-color:rgba(74,222,128,.4)!important;}
-.btn-red>button{background:rgba(248,113,113,.1)!important;color:var(--red)!important;
-  border-color:rgba(248,113,113,.35)!important;}
-.stTextInput>div>div>input,.stTextArea textarea{background:var(--surface2);color:var(--text);
-  border:1px solid var(--border2);border-radius:12px;font-size:.95rem;}
-.stExpander{border:1px solid var(--border);border-radius:14px;background:var(--surface);}
-.stExpander summary{color:var(--text);font-weight:600;}
-[data-testid="stMetric"]{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;}
-code{color:var(--accent)!important;font-size:.8em;}
-
-/* gallery buttons invisibles (cards clicables) */
-.gbtn>button{background:none!important;border:none!important;min-height:0!important;
-  padding:0!important;width:100%;}
-.gbtn>button:hover{border:none!important;}
-
-/* login */
+.stButton>button[kind="primary"]{background:var(--grad);color:#0a0618;border:none;
+  box-shadow:0 8px 28px rgba(139,92,246,.45);}
+.stButton>button[kind="primary"]:hover{filter:brightness(1.1);color:#0a0618;}
+.stTextInput>div>div>input{background:var(--surface2);color:var(--text);
+  border:1px solid var(--border2);border-radius:14px;font-size:.95rem;}
+.stExpander{border:1px solid var(--border);border-radius:16px;background:var(--surface);}
+.stExpander summary{color:var(--text);font-weight:700;}
+[data-testid="stImage"] img{border-radius:16px;}
+code{color:var(--violet2)!important;font-size:.8em;}
 .login-wrap{max-width:380px;margin:10vh auto;padding:34px 30px;background:var(--surface);
-  border:1px solid var(--border2);border-radius:22px;text-align:center;}
-.login-wrap h1{font-size:1.35rem;margin-bottom:4px;
-  background:linear-gradient(120deg,var(--accent2),var(--accent));
+  border:1px solid var(--border2);border-radius:24px;text-align:center;}
+.login-wrap h1{font-size:1.35rem;margin-bottom:4px;background:var(--grad);
   -webkit-background-clip:text;background-clip:text;color:transparent;}
 </style>""", unsafe_allow_html=True)
 
@@ -227,7 +242,6 @@ def gh_json(path: str):
 
 
 def gh_put_json(path: str, obj: dict, msg: str) -> tuple[bool, str]:
-    """Escribe JSON al repo. Devuelve (ok, detalle con HTTP real)."""
     content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=1).encode()).decode()
     body = {"message": msg, "content": content}
     try:
@@ -258,12 +272,45 @@ def gh_json_raw(path: str):
     return r.json() if r.status_code == 200 else None
 
 
-# ---------------- auth gate ----------------
+# Thumbnails base64 (un solo bloque HTML = filmstrip real)
+@st.cache_data(ttl=120)
+def thumb_b64(path: str, w: int = 236) -> str | None:
+    try:
+        from PIL import Image
+        b = gh_raw(path)
+        if not b:
+            return None
+        im = Image.open(io.BytesIO(b)).convert("RGB")
+        im.thumbnail((w, w * 2), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=68)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120)
+def hero_b64(path: str, w: int = 900) -> str | None:
+    try:
+        from PIL import Image
+        b = gh_raw(path)
+        if not b:
+            return None
+        im = Image.open(io.BytesIO(b)).convert("RGB")
+        im.thumbnail((w, w * 2), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=74)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+# ---------------- auth ----------------
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if not st.session_state.auth:
     st.markdown('<div class="login-wrap"><h1>◈ KAIA VALE</h1>'
-                '<p class="kv-muted">Operations Control Center</p>', unsafe_allow_html=True)
+                '<p class="kv-muted">Neon Studio</p>', unsafe_allow_html=True)
     with st.form("login"):
         pw = st.text_input("Password", type="password", label_visibility="collapsed",
                            placeholder="Password")
@@ -283,10 +330,9 @@ agent = gh_json("agent.json") or {}
 budget = gh_json("budget.json") or {}
 jobs = snap.get("jobs", [])
 if not jobs:
-    st.markdown('<div class="card">Sin jobs sincronizados todavía.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="gcard">Sin jobs sincronizados todavía.</div>', unsafe_allow_html=True)
     code = gh_status("snapshot.json")
-    st.warning(f"Diagnóstico GitHub API: HTTP {code} — 401=token inválido o sin acceso al repo, "
-               f"404=SYNC_REPO mal escrito o repo sin contenido, -1=sin conexión.")
+    st.warning(f"GitHub API: HTTP {code} — 401=token inválido, 404=repo mal, -1=sin conexión.")
     st.stop()
 
 job_ids = [j["job_id"] for j in jobs]
@@ -294,6 +340,9 @@ jid = job_ids[0] if len(job_ids) == 1 else st.selectbox("Job", job_ids)
 job = next(j for j in jobs if j["job_id"] == jid)
 versions = job.get("versions", [])
 cur = versions[-1]["version"] if versions else None
+if not st.session_state.sel_ver or not any(v["version"] == st.session_state.sel_ver for v in versions):
+    st.session_state.sel_ver = cur
+sel = st.session_state.sel_ver
 state = gh_json(f"jobs/{jid}/state.json") or {}
 metrics = gh_json("learning/metrics.json") or {}
 phase = gh_json("learning/phase.json") or {}
@@ -342,19 +391,19 @@ STATE_AGE_H = hours_since(state.get("updated"))
 IS_LIVE = STATE_AGE_H < 0.25
 
 
-def global_status():
+def gstatus():
     s = state.get("state", "")
     if s == "APPROVED":
-        return ("APPROVED", "p-green", True)
+        return ("APPROVED", "g", True)
     if _decision_pending() or s == "ELVIN_DECISION_REQUIRED":
-        return ("WAITING FOR ELVIN", "p-amber", True)
+        return ("VEREDICTO PENDIENTE", "a", True)
     if not IS_LIVE:
-        return ("IDLE", "p-gray", False)
+        return ("EN ESPERA", "gr", False)
     if s in ("GENERATING", "CORRECTING"):
-        return ("PRODUCING", "p-green", True)
+        return ("GENERANDO", "g", True)
     if s in ("REVIEWING", "VALIDATING", "ESCALATED_INTERNAL"):
-        return ("REVIEWING", "p-blue", True)
-    return ("IDLE", "p-gray", False)
+        return ("REVISANDO", "b", True)
+    return ("EN ESPERA", "gr", False)
 
 
 def send_decision(action: str, note: str) -> None:
@@ -365,25 +414,24 @@ def send_decision(action: str, note: str) -> None:
     ok, detail = gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}")
     if ok:
         st.success("✅ Decisión enviada. El ACK aparecerá aquí en ~1 min.")
-        st.caption(f"ID: `{did}`")
     else:
         st.error(f"No se pudo enviar. {detail}")
 
 
-def media_for(vn):
-    vinfo = next((x for x in versions if x["version"] == vn), {})
+def asset_path(vn):
     mp4 = gh_raw(f"jobs/{jid}/versions/{vn}/asset.mp4")
     if mp4:
-        return ("video", mp4)
+        return ("video", f"jobs/{jid}/versions/{vn}/asset.mp4")
     png = gh_raw(f"jobs/{jid}/versions/{vn}/asset.png")
-    return ("image", png) if png else (None, None)
+    return ("image", f"jobs/{jid}/versions/{vn}/asset.png") if png else (None, None)
 
 
-def verdict_meta(v):
-    m = {"READY_FOR_ELVIN_REVIEW": ("READY", "p-gold"),
-         "CORREGIR": ("CORREGIR", "p-red"), "ESCALAR": ("ESCALAR", "p-amber"),
-         "APROBADO": ("APROBADO", "p-green"), "ESCALATED_INTERNAL": ("EN REVISIÓN", "p-blue")}
-    return m.get(v, (v or "—", "p-gray"))
+def vbadge(v):
+    m = {"READY_FOR_ELVIN_REVIEW": ("LISTA PARA TI", "gold"),
+         "CORREGIR": ("CORREGIR", "red"), "ESCALAR": ("ESCALAR", "red"),
+         "APROBADO": ("APROBADA", "green"), "ESCALATED_INTERNAL": ("EN REVISIÓN", "blue")}
+    t, c = m.get(v, (v or "—", "gray"))
+    return f'<span class="vbadge {c}">{t}</span>'
 
 
 def build_events():
@@ -391,297 +439,222 @@ def build_events():
     for v in versions:
         m = gh_json(f"jobs/{jid}/versions/{v['version']}/meta.json") or {}
         if m.get("registered"):
-            evs.append((m["registered"], "g", f"◈ {v['version']} registrada"))
+            evs.append((m["registered"], "g", f"◈ {v['version']} renderizada"))
     for d in disag:
         if d.get("job_id") == jid and d.get("ts"):
             cl = d.get("clase", "")
-            txt = {"missed_by_muse": f"Supervisor CORREGIR {d.get('version')}",
-                   "acuerdo": f"Supervisor PASS {d.get('version')}",
-                   "supervisor_false_positive": f"Supervisor marcó · Muse discrepa {d.get('version')}",
+            txt = {"missed_by_muse": f"QA marcó CORREGIR en {d.get('version')}",
+                   "acuerdo": f"QA aprobó {d.get('version')}",
+                   "supervisor_false_positive": f"QA marcó · Muse discrepa ({d.get('version')})",
                    "human_caught_miss": f"Elvin detectó fallo en {d.get('version')}",
                    "human_calibration_positive": f"Elvin aprobó {d.get('version')}",
-                   "user_overrule": f"Elvin decidió sobre {d.get('version')}"}.get(cl, f"{cl} {d.get('version')}")
+                   "user_overrule": f"Elvin decidió sobre {d.get('version')}"}.get(cl, f"{cl}")
             kc = "r" if cl in ("missed_by_muse", "human_caught_miss") else ("g" if cl == "acuerdo" else "a")
             evs.append((d["ts"], kc, txt))
-    try:
-        listing = requests.get(f"{API}/decisions/inbox?ref=main", headers=H, timeout=20).json()
-        if isinstance(listing, list):
-            for f in listing:
-                d = gh_json(f"decisions/inbox/{f['name']}")
-                if d and d.get("timestamp") and d.get("job_id") == jid:
-                    evs.append((d["timestamp"], "a", f"Elvin: {d.get('action')} {d.get('version')}"))
-    except Exception:
-        pass
     evs.sort(key=lambda x: x[0])
     return evs
 
 
 pending = _decision_pending()
-glabel, gpill, gactive = global_status()
+glabel, gcls, gactive = gstatus()
 
 # ---------------- top bar ----------------
 st.markdown(f"""<div class="topbar">
   <div class="logo">◈ KAIA VALE</div>
   <div class="spacer"></div>
-  <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
+  <span class="orb {gcls}"><span class="d"></span>{glabel}</span>
   </div>""", unsafe_allow_html=True)
 
-# Banner BLOCKED_ON_ELVIN (siempre visible arriba)
-_ms = ms
-if _ms.get("status") == "BLOCKED_ON_ELVIN" and _ms.get("needs_decision"):
-    _q = _ms.get("needs_decision", "")
-    st.markdown(f"""<div class="card" style="border-color:rgba(251,191,36,.5);margin-bottom:0">
+# Banner decisión de Muse (SÍ/NO)
+if ms.get("status") == "BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
+    _q = ms.get("needs_decision", "")
+    st.markdown(f"""<div class="gcard" style="border-color:rgba(251,191,36,.45)">
       <h4 style="color:var(--amber)">⚠ Muse necesita tu decisión</h4>
       <div style="font-weight:700">{_q[:280]}</div></div>""", unsafe_allow_html=True)
-    _ap = _ms.get("asset")
-    if _ap:
-        _ad = gh_raw(_ap)
-        if _ad:
-            st.image(_ad, use_container_width=True)
     _b1, _b2 = st.columns(2)
     if _b1.button("✅ SÍ", key="elvin_yes", type="primary", use_container_width=True):
-        _ans = {"question": _q, "answer": "yes",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        _ok, _d = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes")
+        _ok, _d = gh_put_json("progress/elvin_answer.json",
+            {"question": _q, "answer": "yes",
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, "elvin answer: yes")
         st.success("✅ Enviada: SÍ.") if _ok else st.error(f"No se pudo enviar. {_d}")
     if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
-        _ans = {"question": _q, "answer": "no",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        _ok, _d = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no")
+        _ok, _d = gh_put_json("progress/elvin_answer.json",
+            {"question": _q, "answer": "no",
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, "elvin answer: no")
         st.success("Enviada: NO.") if _ok else st.error(f"No se pudo enviar. {_d}")
 
-# ---------------- navegación ----------------
-NAV = [("home", "⌂", "Home"), ("gallery", "▦", "Galería"),
-       ("activity", "≋", "Actividad"), ("learning", "✦", "Aprendizaje")]
-# desktop
+# ---------------- nav ----------------
+NAV = [("studio", "◈", "Studio"), ("renders", "▦", "Renders"),
+       ("queue", "≋", "Queue"), ("model", "✦", "Model")]
 st.markdown('<div class="dnav">', unsafe_allow_html=True)
 _dc = st.columns(4)
 for i, (t, ic, label) in enumerate(NAV):
     if _dc[i].button(f"{ic} {label}", key=f"dnav_{t}", use_container_width=True,
                       type="primary" if TAB == t else "secondary"):
         st.session_state.tab = t
-        st.session_state.sel_ver = None
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
-# mobile: bottom nav con botones streamlit
 st.markdown('<div class="mnav">', unsafe_allow_html=True)
 _mc = st.columns(4)
 for i, (t, ic, label) in enumerate(NAV):
-    lbl = f"{ic}\n{label}"
-    if _mc[i].button(lbl, key=f"mnav_{t}", use_container_width=True,
+    if _mc[i].button(f"{ic}\n{label}", key=f"mnav_{t}", use_container_width=True,
                       type="primary" if TAB == t else "secondary"):
         st.session_state.tab = t
-        st.session_state.sel_ver = None
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ================= HOME =================
-if TAB == "home":
-    st.markdown(f"""<div class="hero">
-      <h2>{jid}</h2>
-      <div class="sub">Última actividad {hace_str(STATE_AGE_H)} · sync ~60s</div>
-      <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
-      </div>""", unsafe_allow_html=True)
+# ================= STUDIO (héroe + filmstrip + queue) =================
+if TAB == "studio":
+    vinfo = next((x for x in versions if x["version"] == sel), {})
+    mtype, mpath = asset_path(sel)
+    hb = hero_b64(mpath, 900) if mtype == "image" else None
+    vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
+    meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
+    conf = vd.get("confianza", "—")
+    if hb:
+        st.markdown(f"""<div class="hero">
+          <img src="data:image/jpeg;base64,{hb}" alt="{sel}">
+          <div class="shade"></div>
+          <div class="cap"><div class="v">{sel}</div>
+          <div class="row">{vbadge(vinfo.get("veredicto_efectivo"))}
+          <span class="vbadge gray">conf {conf}</span></div>
+          <div class="meta-line">{jid} · {meta.get("params", {}).get("model", "krea 2")} · {hace_str(hours_since(meta.get("registered")))}</div>
+          </div></div>""", unsafe_allow_html=True)
+    elif mtype == "image":
+        st.image(gh_raw(mpath), use_container_width=True)
+        st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap">
+          <div class="kv-big" style="font-size:1.3rem">{sel}</div>
+          {vbadge(vinfo.get("veredicto_efectivo"))}</div>""", unsafe_allow_html=True)
+    elif mtype == "video":
+        st.video(gh_raw(mpath))
+        st.markdown(f"<div class='kv-big' style='font-size:1.3rem'>{sel}</div>", unsafe_allow_html=True)
+    else:
+        st.info("Render aún no sincronizado.")
 
-    # Muse status compacto
-    mstatus = ms.get("status", "—")
-    mh = hours_since(ms.get("last_heartbeat")) if ms.get("last_heartbeat") else 999.0
-    stale = mstatus not in ("COMPLETED", "FAILED", "—") and mh * 60 > 10
-    mpill = "p-red" if stale else {"WORKING": "p-green", "WAITING_ON_TOOL": "p-amber",
-        "BLOCKED": "p-red", "COMPLETED": "p-gray", "FAILED": "p-red"}.get(mstatus, "p-gray")
-    st.markdown(f"""<div class="card"><h4>🤖 Muse</h4>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-      <span class="pill {mpill}">{'STALLED?' if stale else mstatus}</span>
-      <span class="kv-muted">heartbeat {hace_str(mh)}</span></div>
-      <div class="kv-muted">{(ms.get('current_step') or '—')[:100]}</div></div>""",
-                unsafe_allow_html=True)
+    # filmstrip
+    st.markdown('<div class="sect">Todos los renders</div><div class="fstrip">', unsafe_allow_html=True)
+    items = []
+    for v in reversed(versions):
+        vn = v["version"]
+        _, p = asset_path(vn)
+        t = thumb_b64(p, 236) if p else None
+        if t:
+            items.append(f'<div class="fitem{" sel" if vn == sel else ""}">'
+                         f'<img src="data:image/jpeg;base64,{t}" alt="{vn}">'
+                         f'<div class="fv">{vn}</div></div>')
+    st.markdown("".join(items) + "</div>", unsafe_allow_html=True)
+    st.caption("↑ Vista general · selecciona abajo para ver en grande")
+    # selector (pills nativo si existe)
+    try:
+        pick = st.pills("Seleccionar render", [v["version"] for v in reversed(versions)],
+                        default=sel, key="fpick")
+    except Exception:
+        pick = st.selectbox("Seleccionar render", [v["version"] for v in reversed(versions)],
+                            index=[v["version"] for v in reversed(versions)].index(sel), key="fpick2")
+    if pick and pick != sel:
+        st.session_state.sel_ver = pick
+        st.rerun()
 
-    # Pipeline stepper
-    nodes = [("MUSE", "agent"), ("GEN", "krea 2"), ("QC", "local"),
-             ("SUP", "gpt"), ("FIX", "krea 2"), ("READY", "elvin")]
-    active_idx = {"PRODUCING": 1, "REVIEWING": 3, "WAITING FOR ELVIN": 5}.get(glabel, -1)
-    curinfo = next((x for x in versions if x["version"] == cur), {})
-    if glabel == "PRODUCING" and curinfo.get("veredicto_efectivo") == "CORREGIR":
-        active_idx = 4
-    all_done = glabel.startswith("APPROVED")
-    sp = '<div class="card"><h4>Pipeline</h4><div class="stepper">'
-    for i, (n, s) in enumerate(nodes):
-        cls = "on" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
-        sp += f'<div class="snode {cls}"><div class="t">{n}</div><div class="s">{s}</div></div>'
-        if i < len(nodes) - 1:
-            sp += f'<div class="slink {"on" if 0 <= active_idx and i < active_idx else ""}"></div>'
-    st.markdown(sp + "</div></div>", unsafe_allow_html=True)
-
-    # Stats rápidas
-    caps = budget.get("caps_usd", {})
-    used = budget.get("monthly_used_usd", 0)
-    st.markdown(f"""<div class="grid3">
-      <div class="card"><h4>Supervisor</h4><div class="kv-big">${used:.4f}</div>
-        <div class="kv-muted">de ${caps.get("monthly", "?")}</div></div>
-      <div class="card"><h4>Versiones</h4><div class="kv-big">{len(versions)}</div>
-        <div class="kv-muted">en este job</div></div>
-      <div class="card"><h4>Acuerdo</h4><div class="kv-big">{metrics.get("acuerdo_pct", "?")}%</div>
-        <div class="kv-muted">Muse ↔ Supervisor</div></div>
-      </div>""", unsafe_allow_html=True)
-
-    # Actividad reciente
-    evs = build_events()
-    tl = '<div class="card"><h4>Actividad reciente</h4><div class="tl">'
-    for ts, kc, txt in evs[-4:]:
-        tl += (f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
-               f'<span class="tl-txt">{txt}</span></div>')
-    tl += "</div></div>"
-    st.markdown(tl, unsafe_allow_html=True)
+    # verdict panel
     if pending:
-        st.markdown('<div class="decide-card"><div class="ttl">◈ TU DECISIÓN</div>'
-                    f'<div class="kv-muted" style="margin-bottom:10px">{cur} está lista</div></div>',
+        st.markdown(f"""<div class="verdict"><h3>◈ Veredicto</h3>
+          <div class="sub">{cur} superó QA · tu decisión la publica</div></div>""",
                     unsafe_allow_html=True)
-        # asset + resumen compacto
-        mtype, mdata = media_for(cur)
-        if mdata and mtype == "image":
-            st.image(mdata, use_container_width=True)
-        elif mdata:
-            st.video(mdata)
-        vd_cur = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}
-        halls_cur = vd_cur.get("hallazgos", [])
-        if halls_cur:
-            for h in halls_cur[:3]:
-                st.markdown(f"• **{h.get('categoria','')}**: {h.get('descripcion','')[:120]}")
+        halls = vd.get("hallazgos", []) if sel == cur else (gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}).get("hallazgos", [])
+        if halls:
+            for h in halls[:3]:
+                st.markdown(f"• **{h.get('categoria','')}**: {h.get('descripcion','')[:130]}")
         else:
-            st.markdown("<div class='kv-muted'>Sin hallazgos bloqueantes. Lista para publicar.</div>",
-                        unsafe_allow_html=True)
+            st.markdown("<div class='kv-muted'>Sin hallazgos bloqueantes.</div>", unsafe_allow_html=True)
         with st.expander("✏️ Instrucciones (solo si pides cambios)"):
-            st.text_input("Instrucciones", key=f"dc_note_{jid}_{cur}",
+            st.text_input("instrucciones", key=f"vc_note_{jid}_{cur}",
                           label_visibility="collapsed", placeholder="Describe los cambios…")
         b1, b2, b3 = st.columns(3)
-        if b1.button("✅ APROBAR", key=f"dc_ap_{jid}_{cur}", type="primary", use_container_width=True):
+        if b1.button("✅ APROBAR", key=f"vc_ap_{jid}_{cur}", type="primary", use_container_width=True):
             send_decision("approve_final", "")
-        if b2.button("🔄 CAMBIOS", key=f"dc_rc_{jid}_{cur}", use_container_width=True):
-            nn = st.session_state.get(f"dc_note_{jid}_{cur}", "")
-            if not nn.strip():
-                st.error("Escribe las instrucciones primero.")
-            else:
-                send_decision("request_changes", nn)
-        if b3.button("❌ RECHAZAR", key=f"dc_rj_{jid}_{cur}", use_container_width=True):
+        if b2.button("🔄 CAMBIOS", key=f"vc_rc_{jid}_{cur}", use_container_width=True):
+            nn = st.session_state.get(f"vc_note_{jid}_{cur}", "")
+            st.error("Escribe las instrucciones primero.") if not nn.strip() else send_decision("request_changes", nn)
+        if b3.button("❌ RECHAZAR", key=f"vc_rj_{jid}_{cur}", use_container_width=True):
             send_decision("reject", "")
-    elif state.get("state") == "ELVIN_DECISION_REQUIRED":
-        st.error("⛔ Requiere tu decisión: el sistema no pudo resolverlo. Revisa la pestaña Galería.")
 
-# ================= GALLERY =================
-elif TAB == "gallery":
-    sel = st.session_state.sel_ver
-    if sel and any(v["version"] == sel for v in versions):
-        # ---- vista detalle ----
-        if st.button("← Galería", key="back_gal"):
-            st.session_state.sel_ver = None
-            st.rerun()
-        vinfo = next(x for x in versions if x["version"] == sel)
-        meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
-        vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
-        dec = gh_json(f"jobs/{jid}/versions/{sel}/decision.json") or {}
-        audit = gh_json(f"jobs/{jid}/versions/{sel}/audit.json") or {}
-        dec_elvin = gh_json(f"jobs/{jid}/versions/{sel}/decision_elvin.json") if vinfo.get("decidido") else None
-        if dec_elvin:
-            lbl = {"approve_final": "APROBADA", "reject": "RECHAZADA",
-                   "request_changes": "CAMBIOS PEDIDOS"}.get(dec_elvin.get("decision"), "DECIDIDA")
-            lbadge = {"approve_final": "p-green", "reject": "p-red",
-                      "request_changes": "p-amber"}.get(dec_elvin.get("decision"), "p-gray")
-        else:
-            lbl, lbadge = verdict_meta(vinfo.get("veredicto_efectivo"))
-        mtype, mdata = media_for(sel)
-        st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 12px">
-          <div class="kv-big" style="font-size:1.3rem">{sel}</div>
-          <span class="pill {lbadge}">{lbl}</span></div>""", unsafe_allow_html=True)
-        if mdata and mtype == "image":
-            st.image(mdata, use_container_width=True)
-        elif mdata:
-            st.video(mdata)
-        else:
-            st.info("Asset aún no sincronizado.")
-        params = meta.get("params", {})
-        halls = vd.get("hallazgos", [])
-        cov = vd.get("visual_coverage") or {}
-        npass = sum(1 for c in cov.values() if isinstance(c, dict)
-                    for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "PASS")
-        nfail = sum(1 for c in cov.values() if isinstance(c, dict)
-                    for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "FAIL")
-        cost = dec.get("costo_usd_estimado", "—")
-        st.markdown(f"""<div class="card"><h4>Detalles</h4><div class="spec">
-          <div><div class="k">Modelo</div><div class="v">{params.get("model", "—")}</div></div>
-          <div><div class="k">Resolución</div><div class="v">{(audit.get("asset_original", {}) or {}).get("resolucion", "—")}</div></div>
-          <div><div class="k">Confidence</div><div class="v">{vd.get("confianza", "—")}</div></div>
-          <div><div class="k">Costo</div><div class="v">{f"${cost:.4f}" if isinstance(cost, (int, float)) else cost}</div></div>
-          <div><div class="k">Defectos</div><div class="v">{len(halls)}</div></div>
-          <div><div class="k">Coverage</div><div class="v">{f"{npass}✓ {nfail}✗" if cov else "—"}</div></div>
-          </div></div>""", unsafe_allow_html=True)
-        if halls:
-            hh = '<div class="card"><h4>Hallazgos</h4>'
-            for h in halls:
-                hh += f"<div style='margin-bottom:8px'>• <b>{h.get('categoria','')}</b> <span class='kv-muted'>({h.get('severidad','')})</span><br><span class='kv-muted'>{h.get('descripcion','')[:200]}</span></div>"
-            st.markdown(hh + "</div>", unsafe_allow_html=True)
-        rel = [d for d in disag if d.get("job_id") == jid and d.get("version") == sel]
-        if rel:
-            wh = '<div class="card"><h4>Quién lo detectó</h4>'
-            qmap = {"missed_by_muse": "Supervisor lo detectó", "supervisor_false_positive": "Supervisor marcó · Muse discrepa",
-                    "human_caught_miss": "Elvin lo detectó", "human_calibration_positive": "Elvin lo aprobó",
-                    "acuerdo": "Muse y Supervisor de acuerdo"}
-            for d in rel:
-                wh += f"<div>• {qmap.get(d.get('clase'), d.get('clase'))}</div>"
-                if d.get("nota"):
-                    wh += f"<div class='kv-muted' style='font-size:.8rem'>{str(d['nota'])[:180]}</div>"
-            st.markdown(wh + "</div>", unsafe_allow_html=True)
-        if cov:
-            with st.expander("Visual Coverage"):
-                for cat, items in cov.items():
-                    if not isinstance(items, dict):
-                        continue
-                    fails = [k for k, v2 in items.items()
-                             if isinstance(v2, dict) and v2.get("estado") == "FAIL"]
-                    st.markdown(f"**{'❌' if fails else '✅'} {cat}**")
-                    for k, v2 in items.items():
-                        if isinstance(v2, dict):
-                            st.caption(f"{'✅' if v2.get('estado')=='PASS' else '❌' if v2.get('estado')=='FAIL' else '▫'} {k}")
-        tr = vd.get("temporal_review") or {}
-        if tr:
-            with st.expander("🎬 Video QC"):
-                for cat, c in tr.items():
-                    if isinstance(c, dict):
-                        ic = {"PASS": "✅", "FAIL": "❌", "NOT_VERIFIABLE": "⚠️"}.get(c.get("estado"), "▫")
-                        st.markdown(f"{ic} **{cat}** — {c.get('estado')}")
+    # queue stepper
+    st.markdown('<div class="sect">Queue</div>', unsafe_allow_html=True)
+    nodes = [("Muse", "brief + concepto"), ("Generar", "krea 2"), ("QC", "validación local"),
+             ("QA", "supervisor"), ("Fix", "corrección"), ("Verdicto", "Elvin")]
+    active_idx = {"GENERANDO": 1, "REVISANDO": 3, "VEREDICTO PENDIENTE": 5}.get(glabel, -1)
+    if glabel == "GENERANDO" and vinfo.get("veredicto_efectivo") == "CORREGIR":
+        active_idx = 4
+    all_done = glabel == "APPROVED"
+    qs = '<div class="gcard">'
+    for i, (n, s) in enumerate(nodes):
+        cls = "on" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
+        qs += (f'<div class="qstep {cls}"><div class="n">{i+1}</div>'
+               f'<div><div class="t">{n}</div><div class="s">{s}</div></div></div>')
+    st.markdown(qs + "</div>", unsafe_allow_html=True)
+
+    # muse mini status
+    mstatus = ms.get("status", "—")
+    mh = hours_since(ms.get("last_heartbeat")) if ms.get("last_heartbeat") else 999.0
+    st.markdown(f"""<div class="gcard"><h4>🤖 Muse · {mstatus}</h4>
+      <div class="kv-muted">{(ms.get("current_step") or "—")[:110]}</div>
+      <div class="kv-muted" style="margin-top:4px;font-size:.76rem">heartbeat {hace_str(mh)}</div></div>""",
+                unsafe_allow_html=True)
+
+# ================= RENDERS (detalle) =================
+elif TAB == "renders":
+    vinfo = next((x for x in versions if x["version"] == sel), {})
+    meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
+    vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
+    dec = gh_json(f"jobs/{jid}/versions/{sel}/decision.json") or {}
+    audit = gh_json(f"jobs/{jid}/versions/{sel}/audit.json") or {}
+    mtype, mpath = asset_path(sel)
+    st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap">
+      <div class="kv-big" style="font-size:1.3rem">{sel}</div>{vbadge(vinfo.get("veredicto_efectivo"))}</div>""",
+                unsafe_allow_html=True)
+    if mtype == "image":
+        st.image(gh_raw(mpath), use_container_width=True)
+    elif mtype == "video":
+        st.video(gh_raw(mpath))
     else:
-        # ---- grid de galería ----
-        st.markdown(f"""<div class="gal-head">
-          <div class="kv-big" style="font-size:1.25rem">Galería</div>
-          <div class="kv-muted">{len(versions)} versiones · toca Ver para detalle</div></div>""",
-                    unsafe_allow_html=True)
-        cols = st.columns(2)
-        for i, v in enumerate(reversed(versions)):
-            vn = v["version"]
-            lbl, lbadge = verdict_meta(v.get("veredicto_efectivo"))
-            mtype, mdata = media_for(vn)
-            with cols[i % 2]:
-                if mdata and mtype == "image":
-                    st.image(mdata, use_container_width=True)
-                elif mdata:
-                    st.markdown('<div class="card" style="text-align:center;padding:30px 10px">🎬<br><span class="kv-muted">video</span></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div class="card" style="text-align:center;padding:30px 10px"><span class="kv-muted">⏳ sin sincronizar</span></div>', unsafe_allow_html=True)
-                st.markdown(f"""<div class="gcap"><span class="gver">{vn}</span>
-                  <span class="pill {lbadge}" style="font-size:.66rem;padding:3px 9px">{lbl}</span></div>""",
-                            unsafe_allow_html=True)
-                if st.button("Ver detalle →", key=f"gopen_{vn}", use_container_width=True):
-                    st.session_state.sel_ver = vn
-                    st.rerun()
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.info("Aún no sincronizado.")
+    params = meta.get("params", {})
+    halls = vd.get("hallazgos", [])
+    cov = vd.get("visual_coverage") or {}
+    npass = sum(1 for c in cov.values() if isinstance(c, dict)
+                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "PASS")
+    nfail = sum(1 for c in cov.values() if isinstance(c, dict)
+                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "FAIL")
+    cost = dec.get("costo_usd_estimado", "—")
+    st.markdown(f"""<div class="gcard"><h4>Specs</h4><div class="spec">
+      <div><div class="k">Modelo</div><div class="v">{params.get("model", "—")}</div></div>
+      <div><div class="k">Resolución</div><div class="v">{(audit.get("asset_original", {}) or {}).get("resolucion", "—")}</div></div>
+      <div><div class="k">Confidence</div><div class="v">{vd.get("confianza", "—")}</div></div>
+      <div><div class="k">Costo</div><div class="v">{f"${cost:.4f}" if isinstance(cost, (int, float)) else cost}</div></div>
+      <div><div class="k">Defectos</div><div class="v">{len(halls)}</div></div>
+      <div><div class="k">QA coverage</div><div class="v">{f"{npass}✓ {nfail}✗" if cov else "—"}</div></div>
+      </div></div>""", unsafe_allow_html=True)
+    if halls:
+        hh = '<div class="gcard"><h4>Hallazgos QA</h4>'
+        for h in halls:
+            hh += f"<div style='margin-bottom:8px'>• <b>{h.get('categoria','')}</b> <span class='kv-muted'>({h.get('severidad','')})</span><br><span class='kv-muted'>{h.get('descripcion','')[:200]}</span></div>"
+        st.markdown(hh + "</div>", unsafe_allow_html=True)
+    tr = vd.get("temporal_review") or {}
+    if tr:
+        with st.expander("🎬 Video QA"):
+            for cat, c in tr.items():
+                if isinstance(c, dict):
+                    ic = {"PASS": "✅", "FAIL": "❌", "NOT_VERIFIABLE": "⚠️"}.get(c.get("estado"), "▫")
+                    st.markdown(f"{ic} **{cat}** — {c.get('estado')}")
 
-# ================= ACTIVITY =================
-elif TAB == "activity":
-    st.markdown(f"""<div class="card"><h4>Estado</h4>
-      <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
+# ================= QUEUE (actividad) =================
+elif TAB == "queue":
+    st.markdown(f"""<div class="gcard"><h4>Estado del job</h4>
+      <span class="orb {gcls}"><span class="d"></span>{glabel}</span>
       <div class="kv-muted" style="margin-top:8px">Última actualización {hace_str(STATE_AGE_H)}</div></div>""",
                 unsafe_allow_html=True)
     evs = build_events()
-    tl = '<div class="card"><h4>Timeline</h4><div class="tl">'
+    tl = '<div class="gcard"><h4>Render log</h4><div class="tl">'
     for ts, kc, txt in evs[-25:]:
         tl += (f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
                f'<span class="tl-txt">{txt}</span></div>')
@@ -690,68 +663,47 @@ elif TAB == "activity":
     with st.expander("Log técnico"):
         st.code("\n".join(ev.get("lines", [])[-40:]))
 
-# ================= LEARNING =================
-elif TAB == "learning":
+# ================= MODEL (aprendizaje) =================
+elif TAB == "model":
     fase = metrics.get("fase", phase.get("fase", "?"))
-    st.markdown(f"""<div class="hero"><h2>{fase}</h2>
-      <div class="sub">{"Supervisión total — el supervisor revisa todo." if fase == "FASE_1" else ""}</div></div>""",
+    st.markdown(f"""<div class="gcard" style="text-align:center;padding:26px">
+      <div class="kv-big" style="font-size:1.1rem">{fase}</div>
+      <div class="kv-muted">{"Supervisión total" if fase == "FASE_1" else ""}</div></div>""",
                 unsafe_allow_html=True)
+    pct = metrics.get("acuerdo_pct")
+    try:
+        pnum = int(float(pct)) if pct not in (None, "?", "") else 0
+    except Exception:
+        pnum = 0
+    ring_c = "var(--green)" if pnum >= 80 else ("var(--amber)" if pnum >= 50 else "var(--violet)")
     hcm = metrics.get("human_caught_miss", 0)
+    st.markdown(f"""<div class="gcard"><h4>Muse ↔ QA</h4><div class="ringwrap">
+      <div class="ring" style="--p:{pnum};--c:{ring_c}"><span>{pct if pct not in (None,'') else '—'}%</span></div>
+      <div><div style="font-weight:800">acuerdo acumulado</div>
+      <div class="kv-muted">{metrics.get("revisiones_totales", 0)} revisiones · {metrics.get("reglas_aprendidas", 0)} reglas</div></div>
+      </div></div>""", unsafe_allow_html=True)
     fp = metrics.get("falsos_positivos_muse", 0) + metrics.get("falsos_positivos_supervisor", 0)
     st.markdown(f"""<div class="grid2">
-      <div class="card"><h4>Acuerdo</h4><div class="kv-big">{metrics.get("acuerdo_pct", "?")}%</div>
-        <div class="kv-muted">Muse ↔ Supervisor</div></div>
-      <div class="card"><h4>Revisiones</h4><div class="kv-big">{metrics.get("revisiones_totales", 0)}</div>
-        <div class="kv-muted">total registradas</div></div>
-      <div class="card"><h4>Reglas</h4><div class="kv-big">{metrics.get("reglas_aprendidas", 0)}</div>
-        <div class="kv-muted">aprendidas</div></div>
-      <div class="card"><h4>Costo</h4><div class="kv-big">${metrics.get("costo_supervisor_total_usd", 0):.4f}</div>
-        <div class="kv-muted">supervisor total</div></div>
-      <div class="card" style="{"border-color:rgba(248,113,113,.4)" if hcm else ""}"><h4>Elvin caught</h4>
-        <div class="kv-big" style="color:{"var(--red)" if hcm else "inherit"}">{hcm}</div>
-        <div class="kv-muted">bloquea salida de FASE_1</div></div>
-      <div class="card"><h4>Falsos +</h4><div class="kv-big">{fp}</div>
-        <div class="kv-muted">Muse + Supervisor</div></div>
+      <div class="gcard"><h4>Costo QA</h4><div class="kv-big">${metrics.get("costo_supervisor_total_usd", 0):.4f}</div></div>
+      <div class="gcard"><h4>Elvin caught</h4><div class="kv-big" style="{'color:var(--red)' if hcm else ''}">{hcm}</div>
+        <div class="kv-muted">bloquea FASE_1</div></div>
+      <div class="gcard"><h4>Falsos +</h4><div class="kv-big">{fp}</div></div>
+      <div class="gcard"><h4>Sin desacuerdo</h4><div class="kv-big">{metrics.get("jobs_consecutivos_sin_desacuerdo", 0)}</div></div>
       </div>""", unsafe_allow_html=True)
-    if disag:
-        seq = sorted([d for d in disag if d.get("clase") in
-                      ("acuerdo", "missed_by_muse", "supervisor_false_positive")],
-                     key=lambda x: x.get("ts", ""))
-        if seq:
-            tot = agr = 0
-            pts = []
-            for d in seq:
-                tot += 1
-                if d["clase"] == "acuerdo":
-                    agr += 1
-                pts.append(round(100 * agr / tot))
-            bars = "".join(
-                f'<div style="flex:1;background:linear-gradient(180deg,var(--accent),rgba(216,169,78,.3));'
-                f'border-radius:4px 4px 2px 2px;min-height:4px;height:{max(p,4)}%"></div>'
-                for p in pts[-20:])
-            st.markdown(f"""<div class="card"><h4>Evolución — acuerdo acumulado</h4>
-              <div style="display:flex;align-items:flex-end;gap:5px;height:110px">{bars}</div>
-              <div class="kv-muted" style="margin-top:8px">¿Muse está mejorando?</div></div>""",
-                        unsafe_allow_html=True)
     n_sup = sum(1 for d in disag if d.get("clase") == "missed_by_muse")
     n_elv = sum(1 for d in disag if d.get("clase") == "human_caught_miss")
     n_muse = metrics.get("llamadas_evitadas", 0)
-    st.markdown(f"""<div class="card"><h4>Quién lo detectó</h4><div class="grid3">
-      <div><div class="kv-big" style="color:var(--green);font-size:1.4rem">{n_muse}</div><div class="kv-muted">Muse</div></div>
-      <div><div class="kv-big" style="color:var(--blue);font-size:1.4rem">{n_sup}</div><div class="kv-muted">Supervisor</div></div>
-      <div><div class="kv-big" style="color:var(--amber);font-size:1.4rem">{n_elv}</div><div class="kv-muted">Elvin</div></div>
+    st.markdown(f"""<div class="gcard"><h4>Quién lo detectó</h4><div class="grid3">
+      <div><div class="kv-big" style="color:var(--green);font-size:1.3rem">{n_muse}</div><div class="kv-muted">Muse</div></div>
+      <div><div class="kv-big" style="color:var(--cyan);font-size:1.3rem">{n_sup}</div><div class="kv-muted">QA</div></div>
+      <div><div class="kv-big" style="color:var(--amber);font-size:1.3rem">{n_elv}</div><div class="kv-muted">Elvin</div></div>
       </div></div>""", unsafe_allow_html=True)
     with st.expander("Reglas aprendidas"):
         for r in rules_l:
             if r.get("activa"):
                 st.markdown(f"**{r['id']}** — {r['regla'][:200]}")
 
-# ---------------- decisión (tarjeta prominente al final del Home) ----------------
-# Se renderiza dentro del tab Home cuando hay decisión pendiente.
-# (Un overlay "sticky" real no es fiable en Streamlit: los divs no se anidan
-# entre bloques. Esta tarjeta usa el CSS .decide-card y es 100% funcional.)
-
 # ---------------- auto-refresh ----------------
-st.caption("Actualización automática cada ~30s.")
+st.caption("Auto-refresh ~30s · Neon Studio v4")
 time.sleep(30)
 st.rerun()
