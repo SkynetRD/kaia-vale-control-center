@@ -1,7 +1,11 @@
-"""Kaia Vale Control Center — AI Operations UI (rediseño 2026-10-12).
+"""Kaia Vale Control Center — AI Operations UI (rediseño v3 2026-10-12).
+
+Estética inspirada en apps de generación IA (PrimeIA/Higgsfield):
+visual-primero, galería de versiones, barra de decisión fija, navegación
+móvil nativa, responsive PC/móvil.
 
 SOLO frontend/UX. No toca reviewer-loop, sincronización, decisiones,
-seguridad ni lógica existente: usa los mismos datos y endpoints.
+seguridad ni lógica existente.
 
 Secretos (Streamlit Cloud -> Settings -> Secrets, NUNCA en el código):
   DASHBOARD_PASSWORD, GITHUB_TOKEN, SYNC_REPO
@@ -30,143 +34,178 @@ except Exception:
 API = f"https://api.github.com/repos/{REPO}/contents"
 H = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.raw"}
 
-# ---------------- navegación (botones + session_state: los links <a href> recargaban
-# la página y borraban la sesión -> mandaban al login) ----------------
+# ---------------- estado de navegación ----------------
 if "tab" not in st.session_state:
     st.session_state.tab = "home"
+if "sel_ver" not in st.session_state:
+    st.session_state.sel_ver = None
 TAB = st.session_state.tab
-if TAB not in ("home", "asset", "activity", "learning"):
+if TAB not in ("home", "gallery", "activity", "learning"):
     TAB = "home"
     st.session_state.tab = "home"
 
-# ---------------- CSS: dark premium ----------------
+# ---------------- CSS: app shell estilo IA ----------------
 st.markdown("""<style>
 :root{
-  --bg:#0a0d12; --surface:#10151d; --surface2:#161c26;
-  --border:rgba(255,255,255,.08); --text:#e9ecf3; --muted:#8b94a7;
-  --accent:#d8a94e; --accent-dim:rgba(216,169,78,.14);
-  --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#6aa8ff;
+  --bg:#07090d; --surface:#0e131b; --surface2:#141b26; --surface3:#1a2230;
+  --border:rgba(255,255,255,.07); --border2:rgba(255,255,255,.12);
+  --text:#eef1f7; --muted:#8b94a7; --faint:#5b6373;
+  --accent:#d8a94e; --accent2:#f0c76a;
+  --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#6aa8ff; --violet:#a78bfa;
+  --r:16px; --r-sm:12px;
 }
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--text);}
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;}
 [data-testid="stHeader"],#MainMenu,footer{visibility:hidden;display:none;}
-.block-container{padding-top:1rem;padding-bottom:6.5rem;max-width:1200px;}
-h1,h2,h3{color:var(--text)!important;letter-spacing:-.01em;}
+.block-container{padding-top:.6rem;padding-bottom:8rem;max-width:1280px;}
+h1,h2,h3{color:var(--text)!important;letter-spacing:-.02em;}
 .stCaption,small{color:var(--muted)!important;}
+*:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 
-/* cards */
-.kv-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
-  padding:16px 18px;margin-bottom:14px;}
-.kv-card h4{margin:0 0 6px;font-size:.82rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
-.kv-big{font-size:1.9rem;font-weight:700;line-height:1.1;}
-.kv-muted{color:var(--muted);font-size:.85rem;}
+/* ===== top bar ===== */
+.topbar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:10px;
+  padding:10px 4px;margin:-.6rem -1rem .8rem;
+  background:rgba(7,9,13,.88);backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);}
+.topbar .logo{font-weight:800;font-size:1rem;letter-spacing:.06em;
+  background:linear-gradient(120deg,var(--accent2),var(--accent));
+  -webkit-background-clip:text;background-clip:text;color:transparent;white-space:nowrap;}
+.topbar .spacer{flex:1;}
 
-/* badges */
-.badge{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.75rem;font-weight:600;
-  letter-spacing:.04em;border:1px solid var(--border);}
-.b-green{background:rgba(74,222,128,.12);color:var(--green);border-color:rgba(74,222,128,.3);}
-.b-red{background:rgba(248,113,113,.12);color:var(--red);border-color:rgba(248,113,113,.3);}
-.b-amber{background:rgba(251,191,36,.12);color:var(--amber);border-color:rgba(251,191,36,.3);}
-.b-blue{background:rgba(106,168,255,.12);color:var(--blue);border-color:rgba(106,168,255,.3);}
-.b-gray{background:rgba(139,148,167,.12);color:var(--muted);}
-.b-gold{background:var(--accent-dim);color:var(--accent);border-color:rgba(216,169,78,.35);}
+/* ===== pills & badges ===== */
+.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;
+  font-size:.76rem;font-weight:700;letter-spacing:.05em;border:1px solid var(--border2);
+  background:var(--surface2);white-space:nowrap;}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:currentColor;}
+.p-green{color:var(--green);border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.1);}
+.p-amber{color:var(--amber);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.1);}
+.p-red{color:var(--red);border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.1);}
+.p-blue{color:var(--blue);border-color:rgba(106,168,255,.35);background:rgba(106,168,255,.1);}
+.p-gold{color:var(--accent);border-color:rgba(216,169,78,.4);background:rgba(216,169,78,.12);}
+.p-gray{color:var(--muted);}
+.p-violet{color:var(--violet);border-color:rgba(167,139,250,.35);background:rgba(167,139,250,.1);}
+.pulse-dot{animation:pdot 1.6s ease-in-out infinite;}
+@keyframes pdot{0%,100%{opacity:.4;transform:scale(.85);}50%{opacity:1;transform:scale(1.1);}}
 
-/* pipeline */
-.pipe{display:flex;align-items:center;gap:0;margin:14px 0;overflow-x:auto;padding:6px 2px;}
-.pnode{flex:0 0 auto;text-align:center;padding:10px 14px;border:1px solid var(--border);
-  border-radius:12px;background:var(--surface);min-width:104px;position:relative;}
-.pnode .t{font-size:.72rem;font-weight:700;letter-spacing:.06em;}
-.pnode .s{font-size:.66rem;color:var(--muted);margin-top:2px;}
-.pnode.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 0 18px rgba(216,169,78,.25);}
-.pnode.active .t{color:var(--accent);}
-.pnode.done{border-color:rgba(74,222,128,.4);}
-.pnode.done .t{color:var(--green);}
-.plink{flex:0 0 26px;height:2px;background:var(--border);position:relative;}
-.plink.on{background:var(--accent);}
-.pulse{width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:6px;
-  animation:pulse 1.6s ease-in-out infinite;}
-@keyframes pulse{0%,100%{opacity:.35;transform:scale(.9);}50%{opacity:1;transform:scale(1.15);}}
+/* ===== hero ===== */
+.hero{position:relative;overflow:hidden;border-radius:20px;padding:22px;
+  background:linear-gradient(135deg,#151c28 0%,#0e1420 55%,#141019 100%);
+  border:1px solid var(--border2);margin-bottom:14px;}
+.hero:before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(600px 200px at 85% -20%,rgba(216,169,78,.16),transparent 60%);}
+.hero h2{margin:0 0 4px;font-size:1.5rem;}
+.hero .sub{color:var(--muted);font-size:.88rem;margin-bottom:12px;}
 
-/* version timeline */
-.vtl{display:flex;gap:8px;overflow-x:auto;padding:8px 2px;margin-bottom:6px;}
-.vchip{flex:0 0 auto;padding:9px 16px;border-radius:12px;border:1px solid var(--border);
-  background:var(--surface);color:var(--text);text-decoration:none;font-weight:600;font-size:.85rem;}
-.vchip small{display:block;font-weight:400;color:var(--muted);font-size:.68rem;}
-.vchip.sel{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
-a.vchip:hover{border-color:var(--accent);}
+/* ===== cards ===== */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:16px;margin-bottom:12px;}
+.card h4{margin:0 0 10px;font-size:.76rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);}
+.card.tappable{cursor:pointer;transition:transform .15s ease,border-color .15s ease;}
+.card.tappable:hover{border-color:var(--accent);transform:translateY(-1px);}
+.kv-big{font-size:1.7rem;font-weight:800;letter-spacing:-.02em;line-height:1.15;}
+.kv-muted{color:var(--muted);font-size:.84rem;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+@media(max-width:640px){.grid3{grid-template-columns:1fr 1fr;}.kv-big{font-size:1.4rem;}}
 
-/* decision banner */
-.decide-banner{background:linear-gradient(135deg,rgba(216,169,78,.16),rgba(216,169,78,.05));
-  border:1px solid rgba(216,169,78,.5);border-radius:16px;padding:22px;margin-bottom:18px;text-align:center;}
-.decide-banner h2{margin:0 0 6px;font-size:1.35rem;letter-spacing:.02em;}
-.decide-btns .stButton>button{min-height:56px;font-weight:700;font-size:1rem;border-radius:12px;}
+/* ===== pipeline stepper ===== */
+.stepper{display:flex;align-items:center;gap:0;overflow-x:auto;padding:8px 2px;margin:4px 0;}
+.snode{flex:0 0 auto;min-width:96px;text-align:center;padding:10px 8px;border-radius:14px;
+  background:var(--surface2);border:1px solid var(--border);position:relative;}
+.snode .t{font-size:.7rem;font-weight:800;letter-spacing:.07em;}
+.snode .s{font-size:.64rem;color:var(--muted);margin-top:3px;}
+.snode.on{border-color:var(--accent);background:rgba(216,169,78,.1);}
+.snode.on .t{color:var(--accent);}
+.snode.done{border-color:rgba(74,222,128,.35);}
+.snode.done .t{color:var(--green);}
+.slink{flex:0 0 22px;height:2px;background:var(--border);}
+.slink.on{background:var(--accent);}
 
-/* nav por botones (no recarga -> no cierra sesión) */
-.nav-anchor + div[data-testid="stVerticalBlock"]{margin-bottom:14px;}
-.nav-anchor + div[data-testid="stVerticalBlock"] button{
-  background:var(--surface);border:1px solid var(--border);color:var(--muted);
-  border-radius:999px;min-height:44px;font-weight:600;}
-.nav-anchor + div[data-testid="stVerticalBlock"] button:hover{border-color:var(--accent);color:var(--accent);}
-.nav-anchor + div[data-testid="stVerticalBlock"] button[kind="primary"]{
-  background:var(--accent-dim);color:var(--accent);border-color:rgba(216,169,78,.5);}
-@media (max-width:767px){
-  .nav-anchor + div[data-testid="stVerticalBlock"]{
-    position:fixed;bottom:0;left:0;right:0;z-index:999;margin-bottom:0;
-    background:rgba(16,21,29,.96);backdrop-filter:blur(12px);
-    border-top:1px solid var(--border);
-    padding:8px 8px calc(10px + env(safe-area-inset-bottom));}
-  .nav-anchor + div[data-testid="stVerticalBlock"] button{border-radius:12px;min-height:52px;}
-  .block-container{padding-bottom:7.5rem;}
-  .kv-big{font-size:1.5rem;}
-}
+/* ===== gallery ===== */
+[data-testid="stImage"] img{border-radius:14px;}
+.gal-head{display:flex;align-items:baseline;gap:10px;margin:2px 0 12px;}
+.gcap{display:flex;align-items:center;gap:8px;margin:6px 0 2px;}
+.gcap .gver{font-weight:800;font-size:.9rem;}
 
-/* activity steps */
-.step{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);}
-.step:last-child{border-bottom:none;}
-.sdot{flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:.8rem;border:1px solid var(--border);background:var(--surface2);color:var(--muted);}
-.step.done .sdot{border-color:var(--green);color:var(--green);}
-.step.active .sdot{border-color:var(--accent);color:var(--accent);}
-.step .st-t{font-weight:600;font-size:.92rem;}
-.step .st-s{font-size:.78rem;color:var(--muted);}
+/* ===== detail hero image ===== */
+.dhero{border-radius:18px;overflow:hidden;border:1px solid var(--border2);margin-bottom:12px;
+  background:var(--surface2);}
+.dhero img{width:100%;display:block;max-height:62vh;object-fit:contain;background:#000;}
+.spec{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}
+.spec .k{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
+.spec .v{font-weight:700;font-size:.92rem;margin-top:2px;}
 
-/* timeline */
-.tl{position:relative;padding-left:18px;}
-.tl:before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:2px;background:var(--border);}
-.tl-ev{position:relative;padding:7px 0 7px 8px;}
-.tl-ev:before{content:"";position:absolute;left:-17px;top:13px;width:8px;height:8px;border-radius:50%;
-  background:var(--surface2);border:2px solid var(--muted);}
+/* ===== timeline ===== */
+.tl{position:relative;padding-left:20px;}
+.tl:before{content:"";position:absolute;left:6px;top:8px;bottom:8px;width:2px;background:var(--border);}
+.tl-ev{position:relative;padding:8px 0 8px 6px;}
+.tl-ev:before{content:"";position:absolute;left:-18px;top:14px;width:9px;height:9px;border-radius:50%;
+  background:var(--surface3);border:2px solid var(--muted);}
 .tl-ev.g:before{border-color:var(--green);} .tl-ev.a:before{border-color:var(--amber);}
 .tl-ev.r:before{border-color:var(--red);} .tl-ev.b:before{border-color:var(--blue);}
-.tl-time{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums;}
+.tl-time{font-size:.7rem;color:var(--faint);font-variant-numeric:tabular-nums;}
 .tl-txt{font-size:.88rem;}
 
-/* chart bars */
-.bars{display:flex;align-items:flex-end;gap:5px;height:110px;padding-top:8px;}
-.bar{flex:1;background:linear-gradient(180deg,var(--accent),rgba(216,169,78,.35));border-radius:4px 4px 2px 2px;
-  min-height:4px;position:relative;}
-.bar:hover{filter:brightness(1.25);}
-.bar span{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);font-size:.6rem;color:var(--muted);}
+/* ===== bottom nav (mobile) / top nav (desktop) ===== */
+.mnav{display:none;}
+@media(max-width:767px){
+  .mnav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:950;
+    background:rgba(10,13,19,.96);backdrop-filter:blur(14px);
+    border-top:1px solid var(--border2);
+    padding:6px 4px calc(8px + env(safe-area-inset-bottom));}
+  .mnav button{flex:1;background:none;border:none;color:var(--muted);font-size:.62rem;font-weight:700;
+    display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0;border-radius:10px;}
+  .mnav button .ic{font-size:1.25rem;line-height:1;}
+  .mnav button.on{color:var(--accent);}
+  .dnav{display:none;}
+}
+@media(min-width:768px){
+  .dnav{display:flex;gap:6px;margin-bottom:14px;}
+  .dnav button{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
+    border-radius:999px;padding:9px 20px;font-weight:700;font-size:.85rem;}
+  .dnav button.on{background:rgba(216,169,78,.14);color:var(--accent);border-color:rgba(216,169,78,.5);}
+}
+
+/* ===== tarjeta de decisión ===== */
+.decide-card{background:linear-gradient(135deg,rgba(216,169,78,.14),rgba(216,169,78,.04));
+  border:1px solid rgba(216,169,78,.5);border-radius:18px;padding:18px;margin:14px 0;
+  text-align:center;}
+.decide-card .ttl{font-weight:800;font-size:1.05rem;letter-spacing:.05em;color:var(--accent);}
+
+/* ===== buttons ===== */
+.stButton>button{background:var(--surface3);color:var(--text);border:1px solid var(--border2);
+  border-radius:14px;min-height:52px;font-weight:700;font-size:.95rem;width:100%;
+  transition:transform .1s ease,border-color .15s ease;}
+.stButton>button:hover{border-color:var(--accent);color:var(--accent);}
+.stButton>button:active{transform:scale(.98);}
+.stButton>button[kind="primary"]{background:linear-gradient(135deg,var(--accent2),var(--accent));
+  color:#14100a;border:none;}
+.stButton>button[kind="primary"]:hover{filter:brightness(1.08);color:#14100a;}
+.btn-green>button{background:rgba(74,222,128,.14)!important;color:var(--green)!important;
+  border-color:rgba(74,222,128,.4)!important;}
+.btn-red>button{background:rgba(248,113,113,.1)!important;color:var(--red)!important;
+  border-color:rgba(248,113,113,.35)!important;}
+.stTextInput>div>div>input,.stTextArea textarea{background:var(--surface2);color:var(--text);
+  border:1px solid var(--border2);border-radius:12px;font-size:.95rem;}
+.stExpander{border:1px solid var(--border);border-radius:14px;background:var(--surface);}
+.stExpander summary{color:var(--text);font-weight:600;}
+[data-testid="stMetric"]{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;}
+code{color:var(--accent)!important;font-size:.8em;}
+
+/* gallery buttons invisibles (cards clicables) */
+.gbtn>button{background:none!important;border:none!important;min-height:0!important;
+  padding:0!important;width:100%;}
+.gbtn>button:hover{border:none!important;}
 
 /* login */
-.login-wrap{max-width:380px;margin:12vh auto;padding:32px;background:var(--surface);
-  border:1px solid var(--border);border-radius:18px;text-align:center;}
-.login-wrap h1{font-size:1.3rem;margin-bottom:4px;}
-
-/* streamlit overrides */
-.stButton>button{background:var(--surface2);color:var(--text);border:1px solid var(--border);
-  border-radius:12px;min-height:48px;font-weight:600;width:100%;}
-.stButton>button:hover{border-color:var(--accent);color:var(--accent);}
-.stButton>button[kind="primary"]{background:var(--accent);color:#0a0d12;border:none;}
-.stButton>button[kind="primary"]:hover{filter:brightness(1.1);color:#0a0d12;}
-.stTextInput>div>div>input,.stTextArea textarea{background:var(--surface2);color:var(--text);
-  border:1px solid var(--border);border-radius:10px;}
-.stExpander{border:1px solid var(--border);border-radius:12px;background:var(--surface);}
-.stExpander summary{color:var(--text);}
-[data-testid="stMetric"]{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px;}
-code{color:var(--accent)!important;}
+.login-wrap{max-width:380px;margin:10vh auto;padding:34px 30px;background:var(--surface);
+  border:1px solid var(--border2);border-radius:22px;text-align:center;}
+.login-wrap h1{font-size:1.35rem;margin-bottom:4px;
+  background:linear-gradient(120deg,var(--accent2),var(--accent));
+  -webkit-background-clip:text;background-clip:text;color:transparent;}
 </style>""", unsafe_allow_html=True)
 
-# ---------------- github helpers (sin cambios) ----------------
+# ---------------- github helpers ----------------
 @st.cache_data(ttl=20)
 def gh_raw(path: str) -> bytes | None:
     r = requests.get(f"{API}/{path}?ref=main", headers=H, timeout=20)
@@ -188,16 +227,10 @@ def gh_json(path: str):
 
 
 def gh_put_json(path: str, obj: dict, msg: str) -> tuple[bool, str]:
-    """Escribe JSON al repo. Devuelve (ok, detalle).
-
-    El detalle incluye el HTTP real de GitHub para diagnosticar:
-    401=token inválido, 403=token sin permiso de escritura,
-    404=repo/ruta mal, -1=sin conexión.
-    """
+    """Escribe JSON al repo. Devuelve (ok, detalle con HTTP real)."""
     content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=1).encode()).decode()
     body = {"message": msg, "content": content}
     try:
-        # Si el archivo existe, GitHub exige el sha para actualizarlo
         existing = gh_json_raw(path)
         if existing and existing.get("sha"):
             body["sha"] = existing["sha"]
@@ -215,13 +248,12 @@ def gh_put_json(path: str, obj: dict, msg: str) -> tuple[bool, str]:
     except Exception:
         detail = r.text[:160]
     hint = {401: "token inválido o expirado — revisar GITHUB_TOKEN en Secrets",
-            403: "token sin permiso de escritura — el token necesita 'Contents: write'",
+            403: "token sin permiso de escritura — necesita 'Contents: write'",
             404: "repo o ruta no encontrada — revisar SYNC_REPO"}.get(r.status_code, "")
     return (False, f"GitHub HTTP {r.status_code}: {detail} {hint}".strip())
 
 
 def gh_json_raw(path: str):
-    """Devuelve el objeto crudo de la Contents API (incluye sha)."""
     r = requests.get(f"{API}/{path}", headers=H, timeout=20)
     return r.json() if r.status_code == 200 else None
 
@@ -251,38 +283,32 @@ agent = gh_json("agent.json") or {}
 budget = gh_json("budget.json") or {}
 jobs = snap.get("jobs", [])
 if not jobs:
-    st.markdown('<div class="kv-card">Sin jobs sincronizados todavía.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">Sin jobs sincronizados todavía.</div>', unsafe_allow_html=True)
     code = gh_status("snapshot.json")
     st.warning(f"Diagnóstico GitHub API: HTTP {code} — 401=token inválido o sin acceso al repo, "
                f"404=SYNC_REPO mal escrito o repo sin contenido, -1=sin conexión.")
     st.stop()
 
 job_ids = [j["job_id"] for j in jobs]
-if len(job_ids) == 1:
-    jid = job_ids[0]
-else:
-    jid = st.selectbox("Job", job_ids)
+jid = job_ids[0] if len(job_ids) == 1 else st.selectbox("Job", job_ids)
 job = next(j for j in jobs if j["job_id"] == jid)
 versions = job.get("versions", [])
 cur = versions[-1]["version"] if versions else None
-if "ver" not in st.session_state or not any(v["version"] == st.session_state.ver for v in versions):
-    st.session_state.ver = cur
-sel_v = st.session_state.ver
-curinfo = next((x for x in versions if x["version"] == cur), {}) if cur else {}
 state = gh_json(f"jobs/{jid}/state.json") or {}
 metrics = gh_json("learning/metrics.json") or {}
 phase = gh_json("learning/phase.json") or {}
 rules_l = gh_json("learning/rules.json") or []
 disag = gh_json("learning/disagreements.json") or []
+ms = gh_json("progress/muse_status.json") or {}
 
 
 def _decision_pending() -> bool:
+    curinfo = next((x for x in versions if x["version"] == cur), {})
     return (curinfo.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
             and not curinfo.get("decidido"))
 
 
 def hours_since(iso) -> float:
-    """Horas desde un timestamp ISO. 999 si no se puede calcular."""
     try:
         from datetime import timezone
         dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
@@ -304,27 +330,31 @@ def hace_str(h: float) -> str:
     return f"hace {int(h / 24)} d"
 
 
-# Actividad REAL: solo se considera "en curso" si el estado se actualizó hace <15 min.
-# Nada de indicadores pulsantes con datos de hace horas.
+def fmt_ts(iso):
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return dt.strftime("%H:%M")
+    except Exception:
+        return "—"
+
+
 STATE_AGE_H = hours_since(state.get("updated"))
 IS_LIVE = STATE_AGE_H < 0.25
 
 
 def global_status():
-    """(label, badge_class). Solo estados reales del job; la actividad 'en curso'
-    exige estado fresco (<15 min). Sin inferencias de texto."""
     s = state.get("state", "")
     if s == "APPROVED":
-        return ("APPROVED ✓", "b-green")
+        return ("APPROVED", "p-green", True)
     if _decision_pending() or s == "ELVIN_DECISION_REQUIRED":
-        return ("WAITING FOR ELVIN", "b-amber")
+        return ("WAITING FOR ELVIN", "p-amber", True)
     if not IS_LIVE:
-        return ("IDLE", "b-gray")
+        return ("IDLE", "p-gray", False)
     if s in ("GENERATING", "CORRECTING"):
-        return ("PRODUCING", "b-green")
+        return ("PRODUCING", "p-green", True)
     if s in ("REVIEWING", "VALIDATING", "ESCALATED_INTERNAL"):
-        return ("REVIEWING", "b-blue")
-    return ("IDLE", "b-gray")
+        return ("REVIEWING", "p-blue", True)
+    return ("IDLE", "p-gray", False)
 
 
 def send_decision(action: str, note: str) -> None:
@@ -334,10 +364,10 @@ def send_decision(action: str, note: str) -> None:
            "note": note.strip()}
     ok, detail = gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}")
     if ok:
-        st.success("✅ Decisión enviada. El ACK del reviewer-loop aparecerá aquí en ~1 min (auto-refresh).")
+        st.success("✅ Decisión enviada. El ACK aparecerá aquí en ~1 min.")
         st.caption(f"ID: `{did}`")
     else:
-        st.error(f"No se pudo enviar la decisión. {detail}")
+        st.error(f"No se pudo enviar. {detail}")
 
 
 def media_for(vn):
@@ -349,459 +379,340 @@ def media_for(vn):
     return ("image", png) if png else (None, None)
 
 
-def verdict_badge(v):
-    m = {"READY_FOR_ELVIN_REVIEW": ("READY", "b-gold"),
-         "CORREGIR": ("CORREGIR", "b-red"), "ESCALAR": ("ESCALAR", "b-amber"),
-         "APROBADO": ("APROBADO", "b-green"), "ESCALATED_INTERNAL": ("EN REVISIÓN", "b-blue")}
-    return m.get(v, (v or "—", "b-gray"))
+def verdict_meta(v):
+    m = {"READY_FOR_ELVIN_REVIEW": ("READY", "p-gold"),
+         "CORREGIR": ("CORREGIR", "p-red"), "ESCALAR": ("ESCALAR", "p-amber"),
+         "APROBADO": ("APROBADO", "p-green"), "ESCALATED_INTERNAL": ("EN REVISIÓN", "p-blue")}
+    return m.get(v, (v or "—", "p-gray"))
 
-
-def fmt_ts(iso):
-    try:
-        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
-        return dt.strftime("%H:%M")
-    except Exception:
-        return "—"
-
-
-# ---------------- navegación ----------------
-NAV = [("home", "⌂", "Home"), ("asset", "◈", "Asset"),
-       ("activity", "≋", "Activity"), ("learning", "✦", "Learning")]
-st.markdown('<div class="nav-anchor"></div>', unsafe_allow_html=True)
-with st.container():
-    ncol = st.columns(4)
-    for i, (t, ic, label) in enumerate(NAV):
-        if ncol[i].button(f"{ic} {label}", key=f"nav_{t}",
-                          type="primary" if TAB == t else "secondary",
-                          use_container_width=True):
-            st.session_state.tab = t
-            st.rerun()
-
-pending = _decision_pending()
-glabel, gbadge = global_status()
-
-# Banner de decisión visible en todas las pestañas
-if pending:
-    st.markdown(f"""<div class="decide-banner">
-      <h2>◈ YOUR REVIEW IS REQUIRED</h2>
-      <div class="kv-muted">{jid} · <b style="color:var(--text)">{cur}</b> está lista para tu decisión</div>
-      </div>""", unsafe_allow_html=True)
-
-# Banner BLOCKED_ON_ELVIN: visible en TODAS las pestañas, arriba del todo.
-# Si Muse está detenido esperando a Elvin, esto es lo primero que se ve.
-# Incluye botones para responder sin salir del Control Center.
-_ms_top = gh_json("progress/muse_status.json") or {}
-if _ms_top.get("status") == "BLOCKED_ON_ELVIN" and _ms_top.get("needs_decision"):
-    _q = _ms_top.get("needs_decision", "")
-    st.markdown(f"""<div class="decide-banner" style="border:3px solid #f59e0b">
-      <h2>🟡 MUSE NECESITA TU DECISIÓN</h2>
-      <div style="font-size:1.05rem;font-weight:600;color:var(--text)">{_q[:300]}</div>
-      </div>""", unsafe_allow_html=True)
-    # Mostrar el asset sobre el que se decide (si hay)
-    _asset_path = _ms_top.get("asset")
-    if _asset_path:
-        _adata = gh_raw(_asset_path)
-        if _adata:
-            st.image(_adata, use_container_width=True)
-        else:
-            st.caption("⏳ Asset aún no sincronizado.")
-    _b1, _b2 = st.columns(2)
-    if _b1.button("✅ SÍ, CONTINÚA", key="elvin_yes", type="primary",
-                  use_container_width=True):
-        _ans = {"question": _q,
-                "answer": "yes",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        _ok, _detail = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes")
-        if _ok:
-            st.success("✅ Respuesta enviada: SÍ. Muse continuará.")
-        else:
-            st.error(f"No se pudo enviar la respuesta. {_detail}")
-    if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
-        _ans = {"question": _q,
-                "answer": "no",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        _ok, _detail = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no")
-        if _ok:
-            st.success("Respuesta enviada: NO. Muse se detendrá.")
-        else:
-            st.error(f"No se pudo enviar la respuesta. {_detail}")
 
 def build_events():
-    """Eventos reales del job, ordenados. Sin invenciones."""
     evs = []
     for v in versions:
         m = gh_json(f"jobs/{jid}/versions/{v['version']}/meta.json") or {}
         if m.get("registered"):
-            evs.append((m["registered"], "g",
-                        f"Muse registered {v['version']}", v["version"]))
+            evs.append((m["registered"], "g", f"◈ {v['version']} registrada"))
     for d in disag:
         if d.get("job_id") == jid and d.get("ts"):
             cl = d.get("clase", "")
-            txt = {"missed_by_muse": f"Supervisor review {d.get('version')} — CORREGIR",
-                   "acuerdo": f"Supervisor review {d.get('version')} — PASS",
-                   "supervisor_false_positive": f"Supervisor flagged {d.get('version')} — overruled",
-                   "human_caught_miss": f"Elvin caught miss in {d.get('version')}",
-                   "human_calibration_positive": f"Elvin approved {d.get('version')}",
-                   "user_overrule": f"Elvin overruled {d.get('version')}"}.get(cl, f"{cl} {d.get('version')}")
+            txt = {"missed_by_muse": f"Supervisor CORREGIR {d.get('version')}",
+                   "acuerdo": f"Supervisor PASS {d.get('version')}",
+                   "supervisor_false_positive": f"Supervisor marcó · Muse discrepa {d.get('version')}",
+                   "human_caught_miss": f"Elvin detectó fallo en {d.get('version')}",
+                   "human_calibration_positive": f"Elvin aprobó {d.get('version')}",
+                   "user_overrule": f"Elvin decidió sobre {d.get('version')}"}.get(cl, f"{cl} {d.get('version')}")
             kc = "r" if cl in ("missed_by_muse", "human_caught_miss") else ("g" if cl == "acuerdo" else "a")
-            evs.append((d["ts"], kc, txt, ""))
+            evs.append((d["ts"], kc, txt))
     try:
         listing = requests.get(f"{API}/decisions/inbox?ref=main", headers=H, timeout=20).json()
         if isinstance(listing, list):
             for f in listing:
                 d = gh_json(f"decisions/inbox/{f['name']}")
                 if d and d.get("timestamp") and d.get("job_id") == jid:
-                    evs.append((d["timestamp"], "a",
-                                f"Elvin: {d.get('action')} {d.get('version')}", ""))
+                    evs.append((d["timestamp"], "a", f"Elvin: {d.get('action')} {d.get('version')}"))
     except Exception:
         pass
     evs.sort(key=lambda x: x[0])
     return evs
 
 
-# ================= HOME / COMMAND CENTER =================
+pending = _decision_pending()
+glabel, gpill, gactive = global_status()
+
+# ---------------- top bar ----------------
+st.markdown(f"""<div class="topbar">
+  <div class="logo">◈ KAIA VALE</div>
+  <div class="spacer"></div>
+  <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
+  </div>""", unsafe_allow_html=True)
+
+# Banner BLOCKED_ON_ELVIN (siempre visible arriba)
+_ms = ms
+if _ms.get("status") == "BLOCKED_ON_ELVIN" and _ms.get("needs_decision"):
+    _q = _ms.get("needs_decision", "")
+    st.markdown(f"""<div class="card" style="border-color:rgba(251,191,36,.5);margin-bottom:0">
+      <h4 style="color:var(--amber)">⚠ Muse necesita tu decisión</h4>
+      <div style="font-weight:700">{_q[:280]}</div></div>""", unsafe_allow_html=True)
+    _ap = _ms.get("asset")
+    if _ap:
+        _ad = gh_raw(_ap)
+        if _ad:
+            st.image(_ad, use_container_width=True)
+    _b1, _b2 = st.columns(2)
+    if _b1.button("✅ SÍ", key="elvin_yes", type="primary", use_container_width=True):
+        _ans = {"question": _q, "answer": "yes",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        _ok, _d = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes")
+        st.success("✅ Enviada: SÍ.") if _ok else st.error(f"No se pudo enviar. {_d}")
+    if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
+        _ans = {"question": _q, "answer": "no",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        _ok, _d = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no")
+        st.success("Enviada: NO.") if _ok else st.error(f"No se pudo enviar. {_d}")
+
+# ---------------- navegación ----------------
+NAV = [("home", "⌂", "Home"), ("gallery", "▦", "Galería"),
+       ("activity", "≋", "Actividad"), ("learning", "✦", "Aprendizaje")]
+# desktop
+st.markdown('<div class="dnav">', unsafe_allow_html=True)
+_dc = st.columns(4)
+for i, (t, ic, label) in enumerate(NAV):
+    if _dc[i].button(f"{ic} {label}", key=f"dnav_{t}", use_container_width=True,
+                      type="primary" if TAB == t else "secondary"):
+        st.session_state.tab = t
+        st.session_state.sel_ver = None
+        st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
+# mobile: bottom nav con botones streamlit
+st.markdown('<div class="mnav">', unsafe_allow_html=True)
+_mc = st.columns(4)
+for i, (t, ic, label) in enumerate(NAV):
+    lbl = f"{ic}\n{label}"
+    if _mc[i].button(lbl, key=f"mnav_{t}", use_container_width=True,
+                      type="primary" if TAB == t else "secondary"):
+        st.session_state.tab = t
+        st.session_state.sel_ver = None
+        st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ================= HOME =================
 if TAB == "home":
-    st.markdown(f"""<div class="kv-card">
-      <h4>Kaia Vale · Global Status</h4>
-      <div class="kv-big">◈ KAIA VALE</div>
-      <div style="margin-top:8px"><span class="badge {gbadge}">{glabel}</span>
-      <span class="kv-muted" style="margin-left:10px">{jid}</span></div>
+    st.markdown(f"""<div class="hero">
+      <h2>{jid}</h2>
+      <div class="sub">Última actividad {hace_str(STATE_AGE_H)} · sync ~60s</div>
+      <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
       </div>""", unsafe_allow_html=True)
 
-    # ---- MUSE STATUS (Progress/Heartbeat Protocol 2026-10-12) ----
-    ms = gh_json("progress/muse_status.json") or {}
+    # Muse status compacto
     mstatus = ms.get("status", "—")
-    mtask = ms.get("current_task") or "—"
-    mstep = ms.get("current_step") or "—"
-    mwait = ms.get("waiting_on") or "—"
-    mstarted = ms.get("started_at") or ""
     mh = hours_since(ms.get("last_heartbeat")) if ms.get("last_heartbeat") else 999.0
-    # Stale detection: activo pero sin heartbeat >10 min -> POSSIBLY STALLED
     stale = mstatus not in ("COMPLETED", "FAILED", "—") and mh * 60 > 10
-    sbadge = "b-red" if stale else {"WORKING": "b-green", "WAITING_ON_TOOL": "b-amber",
-                                    "BLOCKED": "b-red", "COMPLETED": "b-gray",
-                                    "FAILED": "b-red"}.get(mstatus, "b-gray")
-    slabel = "POSSIBLY STALLED" if stale else mstatus
-    st.markdown(f"""<div class="kv-card"><h4>🤖 Muse status</h4>
-      <div style="margin-bottom:8px"><span class="badge {sbadge}">{slabel}</span>
-      <span class="kv-muted" style="margin-left:10px">último heartbeat {hace_str(mh)}</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">
-      <div><div class="kv-muted" style="font-size:.72rem">CURRENT TASK</div>
-        <div style="font-weight:600">{mtask[:60]}</div></div>
-      <div><div class="kv-muted" style="font-size:.72rem">CURRENT STEP</div>
-        <div style="font-weight:600">{mstep[:60]}</div></div>
-      <div><div class="kv-muted" style="font-size:.72rem">WAITING ON</div>
-        <div style="font-weight:600">{mwait}</div></div>
-      <div><div class="kv-muted" style="font-size:.72rem">STARTED AT</div>
-        <div style="font-weight:600">{fmt_ts(mstarted) if mstarted else "—"}</div></div>
-      </div></div>""", unsafe_allow_html=True)
-    hist = ms.get("history") or []
-    if hist:
-        with st.expander(f"📜 Historial de actividad ({len(hist)})"):
-            for ev in reversed(hist[-10:]):
-                st.markdown(f"• `{fmt_ts(ev.get('ts'))}` — {ev.get('event', '')[:120]}")
-    if stale:
-        st.caption("⚠️ Sin heartbeat reciente. La tarea podría estar congelada "
-                   "(no se cancela automáticamente).")
+    mpill = "p-red" if stale else {"WORKING": "p-green", "WAITING_ON_TOOL": "p-amber",
+        "BLOCKED": "p-red", "COMPLETED": "p-gray", "FAILED": "p-red"}.get(mstatus, "p-gray")
+    st.markdown(f"""<div class="card"><h4>🤖 Muse</h4>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span class="pill {mpill}">{'STALLED?' if stale else mstatus}</span>
+      <span class="kv-muted">heartbeat {hace_str(mh)}</span></div>
+      <div class="kv-muted">{(ms.get('current_step') or '—')[:100]}</div></div>""",
+                unsafe_allow_html=True)
 
-    # Pipeline MUSE → GENERATION → QC → SUPERVISOR → CORRECTION → READY
-    nodes = ["MUSE", "GENERATION", "QC", "SUPERVISOR", "CORRECTION", "READY"]
+    # Pipeline stepper
+    nodes = [("MUSE", "agent"), ("GEN", "krea 2"), ("QC", "local"),
+             ("SUP", "gpt"), ("FIX", "krea 2"), ("READY", "elvin")]
     active_idx = {"PRODUCING": 1, "REVIEWING": 3, "WAITING FOR ELVIN": 5}.get(glabel, -1)
-    all_done = glabel.startswith("APPROVED")
-    # si la última acción fue corrección, iluminar CORRECTION en PRODUCING
-    last_v = curinfo.get("veredicto_efectivo", "")
-    if glabel == "PRODUCING" and last_v == "CORREGIR":
+    curinfo = next((x for x in versions if x["version"] == cur), {})
+    if glabel == "PRODUCING" and curinfo.get("veredicto_efectivo") == "CORREGIR":
         active_idx = 4
-    subs = {0: "agent", 1: "krea 2", 2: "local", 3: "gpt-5", 4: "krea 2", 5: "elvin"}
-    pipe = '<div class="pipe">'
-    for i, n in enumerate(nodes):
-        cls = "active" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
-        dot = '<span class="pulse"></span>' if i == active_idx else ""
-        pipe += (f'<div class="pnode {cls}"><div class="t">{dot}{n}</div>'
-                 f'<div class="s">{subs[i]}</div></div>')
+    all_done = glabel.startswith("APPROVED")
+    sp = '<div class="card"><h4>Pipeline</h4><div class="stepper">'
+    for i, (n, s) in enumerate(nodes):
+        cls = "on" if i == active_idx else ("done" if (0 <= active_idx and i < active_idx) or all_done else "")
+        sp += f'<div class="snode {cls}"><div class="t">{n}</div><div class="s">{s}</div></div>'
         if i < len(nodes) - 1:
-            pipe += f'<div class="plink {"on" if 0 <= active_idx and i < active_idx else ""}"></div>'
-    pipe += "</div>"
-    st.markdown(f'<div class="kv-card"><h4>Pipeline</h4>{pipe}'
-                f'<div class="kv-muted">Última actividad del job: {hace_str(STATE_AGE_H)} · '
-                f'sincronización ~60s</div></div>', unsafe_allow_html=True)
-
-    # Actividad reciente: SOLO eventos reales con timestamp. Si no hay nada
-    # en curso, se dice explícitamente. Nada de pasos inventados.
-    evs_home = build_events()
-    st.markdown('<div class="kv-card"><h4>Recent activity</h4><div class="tl">', unsafe_allow_html=True)
-    for ts, kc, txt, _ in evs_home[-4:]:
-        st.markdown(f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
-                    f'<span class="tl-txt">{txt}</span></div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    if IS_LIVE and glabel in ("PRODUCING", "REVIEWING"):
-        st.markdown('<div style="margin:-6px 0 14px"><span class="badge b-green">'
-                    '<span class="pulse"></span>EN CURSO AHORA</span></div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="kv-muted" style="margin:-6px 0 14px">Sin actividad en curso. '
-                    f'Último evento {hace_str(STATE_AGE_H)}.</div>', unsafe_allow_html=True)
-
-    # Panel de decisión
-    if pending:
-        st.markdown('<div class="kv-card"><h4>Decision mode</h4>', unsafe_allow_html=True)
-        vinfo = next((x for x in versions if x["version"] == cur), {})
-        lbl, _ = verdict_badge(vinfo.get("veredicto_efectivo"))
-        vd = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}
-        halls = vd.get("hallazgos", [])
-        with st.container():
-            mtype, mdata = media_for(cur)
-            if mdata and mtype == "image":
-                st.image(mdata, use_container_width=True)
-            elif mdata:
-                st.video(mdata)
-        if halls:
-            st.markdown("**Resumen:**")
-            for h in halls[:4]:
-                st.markdown(f"• {h.get('descripcion', '')[:140]}")
-        else:
-            st.markdown("Sin hallazgos bloqueantes. Lista para publicar.")
-        st.markdown('<div class="decide-btns">', unsafe_allow_html=True)
-        note = st.text_input("Instrucciones (solo para pedir cambios)", key=f"hm_note_{jid}_{cur}")
-        b1, b2, b3 = st.columns(3)
-        if b1.button("APPROVE FINAL", key=f"hm_ap_{jid}_{cur}", type="primary"):
-            send_decision("approve_final", "")
-        if b2.button("REQUEST CHANGES", key=f"hm_rc_{jid}_{cur}"):
-            if not note.strip():
-                st.error("Escribe las instrucciones para pedir cambios.")
-            else:
-                send_decision("request_changes", note)
-        if b3.button("REJECT", key=f"hm_rj_{jid}_{cur}"):
-            send_decision("reject", "")
-        st.markdown("</div></div>", unsafe_allow_html=True)
-    elif state.get("state") == "ELVIN_DECISION_REQUIRED":
-        st.error("⛔ Requiere tu decisión: el sistema no pudo resolverlo con el canon ni las reglas. Revisa el veredicto en la pestaña Asset.")
+            sp += f'<div class="slink {"on" if 0 <= active_idx and i < active_idx else ""}"></div>'
+    st.markdown(sp + "</div></div>", unsafe_allow_html=True)
 
     # Stats rápidas
-    c1, c2 = st.columns(2)
-    with c1:
-        caps = budget.get("caps_usd", {})
-        used = budget.get("monthly_used_usd", 0)
-        st.markdown(f'<div class="kv-card"><h4>Supervisor budget</h4>'
-                    f'<div class="kv-big">${used:.4f}</div>'
-                    f'<div class="kv-muted">de ${caps.get("monthly", "?")} mensual</div></div>',
-                    unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="kv-card"><h4>Cosmo</h4>'
-                    f'<div class="kv-big" style="font-size:1.2rem">{agent.get("status", "—")}</div>'
-                    f'<div class="kv-muted">agente local</div></div>', unsafe_allow_html=True)
-
-# ================= ASSET =================
-elif TAB == "asset":
-    # Timeline de versiones (botones: los links recargaban y cerraban sesión)
-    st.markdown('<div class="kv-card"><h4>Version timeline</h4>', unsafe_allow_html=True)
-    vcols = st.columns(len(versions)) if versions else []
-    for i, v in enumerate(versions):
-        vn = v["version"]
-        if vcols[i].button(vn, key=f"vsel_{jid}_{vn}",
-                           type="primary" if vn == sel_v else "secondary",
-                           use_container_width=True):
-            st.session_state.ver = vn
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    vinfo = next((x for x in versions if x["version"] == sel_v), {})
-    meta = gh_json(f"jobs/{jid}/versions/{sel_v}/meta.json") or {}
-    vd = gh_json(f"jobs/{jid}/versions/{sel_v}/verdict.json") or {}
-    dec = gh_json(f"jobs/{jid}/versions/{sel_v}/decision.json") or {}
-    audit = gh_json(f"jobs/{jid}/versions/{sel_v}/audit.json") or {}
-    # Si Elvin ya decidió sobre esta versión, mostrar el resultado real
-    dec_elvin = gh_json(f"jobs/{jid}/versions/{sel_v}/decision_elvin.json") if vinfo.get("decidido") else None
-    if dec_elvin:
-        lbl = {"approve_final": "APROBADA ✓", "reject": "RECHAZADA",
-               "request_changes": "CAMBIOS PEDIDOS"}.get(dec_elvin.get("decision"), "DECIDIDA")
-        lbadge = {"approve_final": "b-green", "reject": "b-red",
-                  "request_changes": "b-amber"}.get(dec_elvin.get("decision"), "b-gray")
-    else:
-        lbl, lbadge = verdict_badge(vinfo.get("veredicto_efectivo"))
-
-    st.markdown(f"""<div class="kv-card" style="text-align:center">
-      <span class="badge {lbadge}" style="font-size:.9rem;padding:6px 18px">{sel_v} · {lbl}</span>
+    caps = budget.get("caps_usd", {})
+    used = budget.get("monthly_used_usd", 0)
+    st.markdown(f"""<div class="grid3">
+      <div class="card"><h4>Supervisor</h4><div class="kv-big">${used:.4f}</div>
+        <div class="kv-muted">de ${caps.get("monthly", "?")}</div></div>
+      <div class="card"><h4>Versiones</h4><div class="kv-big">{len(versions)}</div>
+        <div class="kv-muted">en este job</div></div>
+      <div class="card"><h4>Acuerdo</h4><div class="kv-big">{metrics.get("acuerdo_pct", "?")}%</div>
+        <div class="kv-muted">Muse ↔ Supervisor</div></div>
       </div>""", unsafe_allow_html=True)
-    mtype, mdata = media_for(sel_v)
-    if mdata and mtype == "image":
-        st.image(mdata, use_container_width=True)
-    elif mdata:
-        st.video(mdata)
-    else:
-        st.info("Asset aún no sincronizado.")
 
-    # Metadata
-    params = meta.get("params", {})
-    conf = vd.get("confianza", "—")
-    cost = dec.get("costo_usd_estimado", "—")
-    res = (audit.get("asset_original", {}) or {}).get("resolucion", "—")
-    halls = vd.get("hallazgos", [])
-    cov = vd.get("visual_coverage") or {}
-    npass = sum(1 for c in cov.values() if isinstance(c, dict)
-                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "PASS")
-    nfail = sum(1 for c in cov.values() if isinstance(c, dict)
-                for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "FAIL")
-    rows = [("Versión", sel_v), ("Estado", lbl), ("Modelo", params.get("model", "—")),
-            ("Resolución", res), ("Confidence", conf),
-            ("Costo", f"${cost:.4f}" if isinstance(cost, (int, float)) else cost),
-            ("Registrada", fmt_ts(meta.get("registered"))),
-            ("Defectos", str(len(halls))),
-            ("Visual Coverage", f"{npass} PASS · {nfail} FAIL" if cov else "—")]
-    grid = '<div class="kv-card"><h4>Detalles</h4><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">'
-    for k, v_ in rows:
-        grid += f'<div><div class="kv-muted" style="font-size:.72rem">{k}</div><div style="font-weight:600">{v_}</div></div>'
-    grid += "</div></div>"
-    st.markdown(grid, unsafe_allow_html=True)
+    # Actividad reciente
+    evs = build_events()
+    tl = '<div class="card"><h4>Actividad reciente</h4><div class="tl">'
+    for ts, kc, txt in evs[-4:]:
+        tl += (f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
+               f'<span class="tl-txt">{txt}</span></div>')
+    tl += "</div></div>"
+    st.markdown(tl, unsafe_allow_html=True)
+    if pending:
+        st.markdown('<div class="decide-card"><div class="ttl">◈ TU DECISIÓN</div>'
+                    f'<div class="kv-muted" style="margin-bottom:10px">{cur} está lista</div></div>',
+                    unsafe_allow_html=True)
+        # asset + resumen compacto
+        mtype, mdata = media_for(cur)
+        if mdata and mtype == "image":
+            st.image(mdata, use_container_width=True)
+        elif mdata:
+            st.video(mdata)
+        vd_cur = gh_json(f"jobs/{jid}/versions/{cur}/verdict.json") or {}
+        halls_cur = vd_cur.get("hallazgos", [])
+        if halls_cur:
+            for h in halls_cur[:3]:
+                st.markdown(f"• **{h.get('categoria','')}**: {h.get('descripcion','')[:120]}")
+        else:
+            st.markdown("<div class='kv-muted'>Sin hallazgos bloqueantes. Lista para publicar.</div>",
+                        unsafe_allow_html=True)
+        with st.expander("✏️ Instrucciones (solo si pides cambios)"):
+            st.text_input("Instrucciones", key=f"dc_note_{jid}_{cur}",
+                          label_visibility="collapsed", placeholder="Describe los cambios…")
+        b1, b2, b3 = st.columns(3)
+        if b1.button("✅ APROBAR", key=f"dc_ap_{jid}_{cur}", type="primary", use_container_width=True):
+            send_decision("approve_final", "")
+        if b2.button("🔄 CAMBIOS", key=f"dc_rc_{jid}_{cur}", use_container_width=True):
+            nn = st.session_state.get(f"dc_note_{jid}_{cur}", "")
+            if not nn.strip():
+                st.error("Escribe las instrucciones primero.")
+            else:
+                send_decision("request_changes", nn)
+        if b3.button("❌ RECHAZAR", key=f"dc_rj_{jid}_{cur}", use_container_width=True):
+            send_decision("reject", "")
+    elif state.get("state") == "ELVIN_DECISION_REQUIRED":
+        st.error("⛔ Requiere tu decisión: el sistema no pudo resolverlo. Revisa la pestaña Galería.")
 
-    # Qué estaba mal → qué se corrigió → quién lo detectó
-    if halls:
-        st.markdown('<div class="kv-card"><h4>Hallazgos</h4>', unsafe_allow_html=True)
-        for h in halls:
-            sev = h.get("severidad", "")
-            st.markdown(f"• **{h.get('categoria','')}** ({sev}): {h.get('descripcion','')[:220]}")
-        st.markdown("</div>", unsafe_allow_html=True)
-    # quién lo detectó (del log de aprendizaje)
-    rel = [d for d in disag if d.get("job_id") == jid and d.get("version") == sel_v]
-    if rel:
-        st.markdown('<div class="kv-card"><h4>Quién lo detectó</h4>', unsafe_allow_html=True)
-        for d in rel:
-            quien = {"missed_by_muse": "Supervisor lo detectó",
-                     "supervisor_false_positive": "Supervisor marcó · Muse discrepa",
-                     "human_caught_miss": "Elvin lo detectó",
-                     "human_calibration_positive": "Elvin lo aprobó",
-                     "acuerdo": "Muse y Supervisor de acuerdo"}.get(d.get("clase"), d.get("clase"))
-            st.markdown(f"• {quien}")
-            if d.get("nota"):
-                st.caption(str(d["nota"])[:220])
-        st.markdown("</div>", unsafe_allow_html=True)
-    if meta.get("nota"):
-        st.caption(f"📝 {meta['nota'][:300]}")
-
-    # Visual Coverage resumido
-    if cov:
-        st.markdown('<div class="kv-card"><h4>Visual Coverage</h4>', unsafe_allow_html=True)
-        for cat, items in cov.items():
-            if not isinstance(items, dict):
-                continue
-            fails = [k for k, v2 in items.items()
-                     if isinstance(v2, dict) and v2.get("estado") == "FAIL"]
-            icon = "❌" if fails else "✅"
-            with st.expander(f"{icon} {cat} ({len(items)} ítems)"):
-                for k, v2 in items.items():
-                    if not isinstance(v2, dict):
+# ================= GALLERY =================
+elif TAB == "gallery":
+    sel = st.session_state.sel_ver
+    if sel and any(v["version"] == sel for v in versions):
+        # ---- vista detalle ----
+        if st.button("← Galería", key="back_gal"):
+            st.session_state.sel_ver = None
+            st.rerun()
+        vinfo = next(x for x in versions if x["version"] == sel)
+        meta = gh_json(f"jobs/{jid}/versions/{sel}/meta.json") or {}
+        vd = gh_json(f"jobs/{jid}/versions/{sel}/verdict.json") or {}
+        dec = gh_json(f"jobs/{jid}/versions/{sel}/decision.json") or {}
+        audit = gh_json(f"jobs/{jid}/versions/{sel}/audit.json") or {}
+        dec_elvin = gh_json(f"jobs/{jid}/versions/{sel}/decision_elvin.json") if vinfo.get("decidido") else None
+        if dec_elvin:
+            lbl = {"approve_final": "APROBADA", "reject": "RECHAZADA",
+                   "request_changes": "CAMBIOS PEDIDOS"}.get(dec_elvin.get("decision"), "DECIDIDA")
+            lbadge = {"approve_final": "p-green", "reject": "p-red",
+                      "request_changes": "p-amber"}.get(dec_elvin.get("decision"), "p-gray")
+        else:
+            lbl, lbadge = verdict_meta(vinfo.get("veredicto_efectivo"))
+        mtype, mdata = media_for(sel)
+        st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 12px">
+          <div class="kv-big" style="font-size:1.3rem">{sel}</div>
+          <span class="pill {lbadge}">{lbl}</span></div>""", unsafe_allow_html=True)
+        if mdata and mtype == "image":
+            st.image(mdata, use_container_width=True)
+        elif mdata:
+            st.video(mdata)
+        else:
+            st.info("Asset aún no sincronizado.")
+        params = meta.get("params", {})
+        halls = vd.get("hallazgos", [])
+        cov = vd.get("visual_coverage") or {}
+        npass = sum(1 for c in cov.values() if isinstance(c, dict)
+                    for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "PASS")
+        nfail = sum(1 for c in cov.values() if isinstance(c, dict)
+                    for v2 in c.values() if isinstance(v2, dict) and v2.get("estado") == "FAIL")
+        cost = dec.get("costo_usd_estimado", "—")
+        st.markdown(f"""<div class="card"><h4>Detalles</h4><div class="spec">
+          <div><div class="k">Modelo</div><div class="v">{params.get("model", "—")}</div></div>
+          <div><div class="k">Resolución</div><div class="v">{(audit.get("asset_original", {}) or {}).get("resolucion", "—")}</div></div>
+          <div><div class="k">Confidence</div><div class="v">{vd.get("confianza", "—")}</div></div>
+          <div><div class="k">Costo</div><div class="v">{f"${cost:.4f}" if isinstance(cost, (int, float)) else cost}</div></div>
+          <div><div class="k">Defectos</div><div class="v">{len(halls)}</div></div>
+          <div><div class="k">Coverage</div><div class="v">{f"{npass}✓ {nfail}✗" if cov else "—"}</div></div>
+          </div></div>""", unsafe_allow_html=True)
+        if halls:
+            hh = '<div class="card"><h4>Hallazgos</h4>'
+            for h in halls:
+                hh += f"<div style='margin-bottom:8px'>• <b>{h.get('categoria','')}</b> <span class='kv-muted'>({h.get('severidad','')})</span><br><span class='kv-muted'>{h.get('descripcion','')[:200]}</span></div>"
+            st.markdown(hh + "</div>", unsafe_allow_html=True)
+        rel = [d for d in disag if d.get("job_id") == jid and d.get("version") == sel]
+        if rel:
+            wh = '<div class="card"><h4>Quién lo detectó</h4>'
+            qmap = {"missed_by_muse": "Supervisor lo detectó", "supervisor_false_positive": "Supervisor marcó · Muse discrepa",
+                    "human_caught_miss": "Elvin lo detectó", "human_calibration_positive": "Elvin lo aprobó",
+                    "acuerdo": "Muse y Supervisor de acuerdo"}
+            for d in rel:
+                wh += f"<div>• {qmap.get(d.get('clase'), d.get('clase'))}</div>"
+                if d.get("nota"):
+                    wh += f"<div class='kv-muted' style='font-size:.8rem'>{str(d['nota'])[:180]}</div>"
+            st.markdown(wh + "</div>", unsafe_allow_html=True)
+        if cov:
+            with st.expander("Visual Coverage"):
+                for cat, items in cov.items():
+                    if not isinstance(items, dict):
                         continue
-                    est = v2.get("estado", "?")
-                    ic = {"PASS": "✅", "FAIL": "❌", "NOT_VISIBLE": "👁", "NOT_APPLICABLE": "➖"}.get(est, "❓")
-                    st.markdown(f"{ic} **{k}** — {est}")
-                    if v2.get("evidencia"):
-                        st.caption(f"↳ {v2['evidencia'][:160]}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Video QC (post-mortem 2026-10-12: los videos bypassaban el loop)
-    tr = vd.get("temporal_review") or {}
-    tech_v = gh_json(f"jobs/{jid}/technical_validation_video.json") or {}
-    if tr or tech_v:
-        st.markdown('<div class="kv-card"><h4>🎬 Video QC</h4>', unsafe_allow_html=True)
-        # Validación técnica
-        if tech_v:
-            fails_t = [k for k, c in tech_v.items()
-                       if isinstance(c, dict) and c.get("estado") == "FAIL"]
-            icon_t = "❌" if fails_t else "✅"
-            with st.expander(f"{icon_t} Technical validation "
-                             f"({'FAIL: ' + ', '.join(fails_t) if fails_t else 'PASS'})"):
-                for k, c in tech_v.items():
-                    if not isinstance(c, dict):
-                        continue
-                    est = c.get("estado", "?")
-                    ic = {"PASS": "✅", "FAIL": "❌"}.get(est, "❓")
-                    st.markdown(f"{ic} **{k}** — {est}")
-                    if c.get("detalle"):
-                        st.caption(f"↳ {c['detalle'][:180]}")
-                st.caption("TECHNICAL_FPS es dato técnico, no prueba de fluidez percibida.")
-        # Temporal review por categoría
+                    fails = [k for k, v2 in items.items()
+                             if isinstance(v2, dict) and v2.get("estado") == "FAIL"]
+                    st.markdown(f"**{'❌' if fails else '✅'} {cat}**")
+                    for k, v2 in items.items():
+                        if isinstance(v2, dict):
+                            st.caption(f"{'✅' if v2.get('estado')=='PASS' else '❌' if v2.get('estado')=='FAIL' else '▫'} {k}")
+        tr = vd.get("temporal_review") or {}
         if tr:
-            with st.expander("⏱ Temporal review"):
+            with st.expander("🎬 Video QC"):
                 for cat, c in tr.items():
-                    if not isinstance(c, dict):
-                        continue
-                    est = c.get("estado", "?")
-                    ic = {"PASS": "✅", "FAIL": "❌",
-                          "NOT_VERIFIABLE": "⚠️", "NOT_APPLICABLE": "➖"}.get(est, "❓")
-                    st.markdown(f"{ic} **{cat}** — {est}")
-                    if c.get("evidencia"):
-                        st.caption(f"📎 Evidencia: {c['evidencia'][:180]}")
-                    if c.get("notas"):
-                        st.caption(f"📝 {c['notas'][:220]}")
-                st.caption("NOT_VERIFIABLE bloquea READY_FOR_ELVIN_REVIEW (fail-closed).")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("View technical details"):
-        st.json({"meta": meta, "verdict_resumen": {k: vd.get(k) for k in
-                ("veredicto", "confianza", "motivo_principal")},
-                "decision": dec, "audit": {k: audit.get(k) for k in
-                ("asset_original", "generado")} if audit else None})
+                    if isinstance(c, dict):
+                        ic = {"PASS": "✅", "FAIL": "❌", "NOT_VERIFIABLE": "⚠️"}.get(c.get("estado"), "▫")
+                        st.markdown(f"{ic} **{cat}** — {c.get('estado')}")
+    else:
+        # ---- grid de galería ----
+        st.markdown(f"""<div class="gal-head">
+          <div class="kv-big" style="font-size:1.25rem">Galería</div>
+          <div class="kv-muted">{len(versions)} versiones · toca Ver para detalle</div></div>""",
+                    unsafe_allow_html=True)
+        cols = st.columns(2)
+        for i, v in enumerate(reversed(versions)):
+            vn = v["version"]
+            lbl, lbadge = verdict_meta(v.get("veredicto_efectivo"))
+            mtype, mdata = media_for(vn)
+            with cols[i % 2]:
+                if mdata and mtype == "image":
+                    st.image(mdata, use_container_width=True)
+                elif mdata:
+                    st.markdown('<div class="card" style="text-align:center;padding:30px 10px">🎬<br><span class="kv-muted">video</span></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="card" style="text-align:center;padding:30px 10px"><span class="kv-muted">⏳ sin sincronizar</span></div>', unsafe_allow_html=True)
+                st.markdown(f"""<div class="gcap"><span class="gver">{vn}</span>
+                  <span class="pill {lbadge}" style="font-size:.66rem;padding:3px 9px">{lbl}</span></div>""",
+                            unsafe_allow_html=True)
+                if st.button("Ver detalle →", key=f"gopen_{vn}", use_container_width=True):
+                    st.session_state.sel_ver = vn
+                    st.rerun()
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 # ================= ACTIVITY =================
 elif TAB == "activity":
-    st.markdown('<div class="kv-card"><h4>Estado actual</h4>', unsafe_allow_html=True)
-    st.markdown(f'<div style="margin-bottom:8px"><span class="badge {gbadge}">{glabel}</span></div>',
+    st.markdown(f"""<div class="card"><h4>Estado</h4>
+      <span class="pill {gpill}"><span class="dot{' pulse-dot' if gactive else ''}"></span>{glabel}</span>
+      <div class="kv-muted" style="margin-top:8px">Última actualización {hace_str(STATE_AGE_H)}</div></div>""",
                 unsafe_allow_html=True)
-    if IS_LIVE and glabel in ("PRODUCING", "REVIEWING"):
-        st.markdown('<span class="badge b-green"><span class="pulse"></span>EN CURSO AHORA</span>',
-                    unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="kv-muted">Sin actividad en curso. '
-                    f'Última actualización del job {hace_str(STATE_AGE_H)}.</div>',
-                    unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # Timeline de eventos (construida de datos reales)
     evs = build_events()
-    st.markdown('<div class="kv-card"><h4>Activity timeline</h4><div class="tl">', unsafe_allow_html=True)
-    for ts, kc, txt, _ in evs[-25:]:
-        st.markdown(f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
-                    f'<span class="tl-txt">{txt}</span></div>', unsafe_allow_html=True)
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
+    tl = '<div class="card"><h4>Timeline</h4><div class="tl">'
+    for ts, kc, txt in evs[-25:]:
+        tl += (f'<div class="tl-ev {kc}"><span class="tl-time">{fmt_ts(ts)}</span> '
+               f'<span class="tl-txt">{txt}</span></div>')
+    st.markdown(tl + "</div></div>", unsafe_allow_html=True)
     ev = gh_json(f"jobs/{jid}/events.json") or {"lines": []}
-    with st.expander("Raw technical log"):
+    with st.expander("Log técnico"):
         st.code("\n".join(ev.get("lines", [])[-40:]))
 
 # ================= LEARNING =================
 elif TAB == "learning":
     fase = metrics.get("fase", phase.get("fase", "?"))
-    st.markdown(f"""<div class="kv-card"><h4>Learning Center</h4>
-      <div class="kv-big">◈ {fase}</div>
-      <div class="kv-muted">{"Supervisión total — el supervisor revisa todo." if fase=="FASE_1" else ""}</div>
+    st.markdown(f"""<div class="hero"><h2>{fase}</h2>
+      <div class="sub">{"Supervisión total — el supervisor revisa todo." if fase == "FASE_1" else ""}</div></div>""",
+                unsafe_allow_html=True)
+    hcm = metrics.get("human_caught_miss", 0)
+    fp = metrics.get("falsos_positivos_muse", 0) + metrics.get("falsos_positivos_supervisor", 0)
+    st.markdown(f"""<div class="grid2">
+      <div class="card"><h4>Acuerdo</h4><div class="kv-big">{metrics.get("acuerdo_pct", "?")}%</div>
+        <div class="kv-muted">Muse ↔ Supervisor</div></div>
+      <div class="card"><h4>Revisiones</h4><div class="kv-big">{metrics.get("revisiones_totales", 0)}</div>
+        <div class="kv-muted">total registradas</div></div>
+      <div class="card"><h4>Reglas</h4><div class="kv-big">{metrics.get("reglas_aprendidas", 0)}</div>
+        <div class="kv-muted">aprendidas</div></div>
+      <div class="card"><h4>Costo</h4><div class="kv-big">${metrics.get("costo_supervisor_total_usd", 0):.4f}</div>
+        <div class="kv-muted">supervisor total</div></div>
+      <div class="card" style="{"border-color:rgba(248,113,113,.4)" if hcm else ""}"><h4>Elvin caught</h4>
+        <div class="kv-big" style="color:{"var(--red)" if hcm else "inherit"}">{hcm}</div>
+        <div class="kv-muted">bloquea salida de FASE_1</div></div>
+      <div class="card"><h4>Falsos +</h4><div class="kv-big">{fp}</div>
+        <div class="kv-muted">Muse + Supervisor</div></div>
       </div>""", unsafe_allow_html=True)
-
-    def card(title, big, sub=""):
-        st.markdown(f'<div class="kv-card"><h4>{title}</h4><div class="kv-big">{big}</div>'
-                    f'<div class="kv-muted">{sub}</div></div>', unsafe_allow_html=True)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        card("Muse ↔ Supervisor agreement", f"{metrics.get('acuerdo_pct', '?')}%", "revisiones con veredicto coincidente")
-        card("Clean streak", str(metrics.get("jobs_consecutivos_sin_desacuerdo", 0)), "revisiones sin desacuerdo")
-        card("Learned rules", str(metrics.get("reglas_aprendidas", 0)), "reglas operacionales activas")
-        card("Supervisor cost", f"${metrics.get('costo_supervisor_total_usd', 0):.4f}", "total acumulado")
-    with c2:
-        hcm = metrics.get("human_caught_miss", 0)
-        card("Human Caught Miss", str(hcm), "Elvin detectó · Muse+Supervisor omitieron")
-        fp = metrics.get("falsos_positivos_muse", 0) + metrics.get("falsos_positivos_supervisor", 0)
-        card("False positives", str(fp), "Muse + Supervisor")
-        card("Calls avoided", str(metrics.get("llamadas_evitadas", 0)), "revisiones que Muse resolvió solo")
-        card("Revisiones", str(metrics.get("revisiones_totales", 0)), "total registradas")
-
-    if hcm:
-        st.markdown(f"""<div class="kv-card" style="border-color:rgba(248,113,113,.4)">
-          <h4 style="color:var(--red)">⚠ Human Caught Miss — bloquea salida de FASE_1</h4>""",
-                    unsafe_allow_html=True)
-        for d in metrics.get("human_caught_miss_detalle", []):
-            st.markdown(f"• **{d['job_id']} {d['version']}**: {', '.join(d['hallazgos'][:2])}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Evolución del aprendizaje: acuerdo acumulado en el tiempo
     if disag:
         seq = sorted([d for d in disag if d.get("clase") in
                       ("acuerdo", "missed_by_muse", "supervisor_false_positive")],
@@ -815,32 +726,30 @@ elif TAB == "learning":
                     agr += 1
                 pts.append(round(100 * agr / tot))
             bars = "".join(
-                f'<div class="bar" style="height:{max(p,4)}%" title="{p}%"><span>{i+1}</span></div>'
-                for i, p in enumerate(pts[-20:]))
-            st.markdown(f'<div class="kv-card"><h4>Learning evolution — acuerdo acumulado</h4>'
-                        f'<div class="bars">{bars}</div>'
-                        f'<div class="kv-muted" style="margin-top:26px">¿Muse está mejorando? '
-                        f'Tendencia del % de acuerdo tras cada revisión.</div></div>',
+                f'<div style="flex:1;background:linear-gradient(180deg,var(--accent),rgba(216,169,78,.3));'
+                f'border-radius:4px 4px 2px 2px;min-height:4px;height:{max(p,4)}%"></div>'
+                for p in pts[-20:])
+            st.markdown(f"""<div class="card"><h4>Evolución — acuerdo acumulado</h4>
+              <div style="display:flex;align-items:flex-end;gap:5px;height:110px">{bars}</div>
+              <div class="kv-muted" style="margin-top:8px">¿Muse está mejorando?</div></div>""",
                         unsafe_allow_html=True)
-
-    # Quién lo detectó
     n_sup = sum(1 for d in disag if d.get("clase") == "missed_by_muse")
     n_elv = sum(1 for d in disag if d.get("clase") == "human_caught_miss")
     n_muse = metrics.get("llamadas_evitadas", 0)
-    st.markdown('<div class="kv-card"><h4>Quién lo detectó</h4>', unsafe_allow_html=True)
-    cc1, cc2, cc3 = st.columns(3)
-    cc1.markdown(f'<div class="kv-big" style="color:var(--green)">{n_muse}</div><div class="kv-muted">Muse caught it</div>', unsafe_allow_html=True)
-    cc2.markdown(f'<div class="kv-big" style="color:var(--blue)">{n_sup}</div><div class="kv-muted">Supervisor caught it</div>', unsafe_allow_html=True)
-    cc3.markdown(f'<div class="kv-big" style="color:var(--amber)">{n_elv}</div><div class="kv-muted">Elvin caught it</div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("Learned rules"):
+    st.markdown(f"""<div class="card"><h4>Quién lo detectó</h4><div class="grid3">
+      <div><div class="kv-big" style="color:var(--green);font-size:1.4rem">{n_muse}</div><div class="kv-muted">Muse</div></div>
+      <div><div class="kv-big" style="color:var(--blue);font-size:1.4rem">{n_sup}</div><div class="kv-muted">Supervisor</div></div>
+      <div><div class="kv-big" style="color:var(--amber);font-size:1.4rem">{n_elv}</div><div class="kv-muted">Elvin</div></div>
+      </div></div>""", unsafe_allow_html=True)
+    with st.expander("Reglas aprendidas"):
         for r in rules_l:
             if r.get("activa"):
                 st.markdown(f"**{r['id']}** — {r['regla'][:200]}")
-    with st.expander("Desacuerdos recientes"):
-        for d in reversed(disag[-8:]):
-            st.markdown(f"**{d['job_id']} {d['version']}** · {d.get('clase')}")
+
+# ---------------- decisión (tarjeta prominente al final del Home) ----------------
+# Se renderiza dentro del tab Home cuando hay decisión pendiente.
+# (Un overlay "sticky" real no es fiable en Streamlit: los divs no se anidan
+# entre bloques. Esta tarjeta usa el CSS .decide-card y es 100% funcional.)
 
 # ---------------- auto-refresh ----------------
 st.caption("Actualización automática cada ~30s.")
