@@ -1,15 +1,26 @@
-"""KAIA VALE — Mission Control v6.5.
-UI-only reliability/security pass over v6.3. GitHub bus, decision protocol
-(approve_final / reject / request_changes, inbox + ACK) and backend contracts unchanged.
+"""KAIA VALE — Mission Control v6.6.
+Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
+decision records only gain additive fields (asset_file, asset_sha).
+- Asset approvals only through job/version decisions: Muse's yes/no channel can no
+  longer approve an asset that is not registered as a version.
+- Decisions are bound to the exact asset blob (sha) and are idempotent (uuid5 id +
+  create-only write), so double taps / stale API reads cannot create duplicates.
+- Sync health banner: unprocessed inbox decisions and Muse heartbeat age are shown
+  from real bus data, so a stopped backend is visible instead of looking "Idle".
+- Default job = one waiting for Elvin, else the most recently updated.
 """
-import base64, hmac, html, inspect, json, time, uuid
+import base64, hmac, html, inspect, json, re, time, uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v6.5"
+APP_VERSION = "v6.6"
+DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
+HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
+# Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
+ASSET_APPROVAL_RE = re.compile(r"aprob|apru[eé]b|autoriz|publica|regener", re.I)
 REFRESH_MS = 30_000
 PENDING_REFRESH_MS = 5_000
 ACK_TIMEOUT_S = 600            # warn if the backend has not ACKed after 10 min
@@ -328,10 +339,27 @@ jobs = [j for j in as_list(snap.get("jobs")) if isinstance(j, dict) and j.get("j
 if not jobs:
     st.info("Sin jobs sincronizados.")
     st.stop()
+def _job_sort_key(j):
+    # Most recently updated first; jobs without a timestamp go last.
+    return -_parse_ts_or(j.get("updated"), 0.0)
+
+def _parse_ts_or(iso, fallback):
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+    except Exception:
+        return fallback
+
+def _job_waiting(j):
+    return any(isinstance(v, dict) and v.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not v.get("decidido")
+               for v in as_list(j.get("versions")))
+
+jobs = sorted(jobs, key=_job_sort_key)
 job_ids = [j["job_id"] for j in jobs]
 
 if st.session_state.get("jid") not in job_ids:
-    st.session_state.jid = job_ids[0]
+    # Open a job that is waiting for Elvin; otherwise the most recently updated one.
+    st.session_state.jid = next((j["job_id"] for j in jobs if _job_waiting(j)), job_ids[0])
 jid = st.session_state.jid
 job = next(j for j in jobs if j.get("job_id") == jid)
 
@@ -501,6 +529,35 @@ def inbox_decision_for(vn, *, fresh=False):
                         "version": vn, "action": a.get("action"), "sent_at": time.time(), "ack_status": "accepted"}, True
     return None, True
 
+def sync_health():
+    """Real backend health from the bus. Returns dict or None if GitHub could not be read.
+    pending = inbox decisions with neither an ACK file nor an applied.json entry."""
+    inbox, acks = gh_tree("decisions/inbox"), gh_tree("decisions/acks")
+    if inbox is None or acks is None:
+        return None
+    applied = as_dict(gh_json("decisions/applied.json", {}))
+    ack_ids = {n[:-5] for n in acks if n.endswith(".json")}
+    pending = []
+    for name in sorted(inbox):
+        if not name.endswith(".json"):
+            continue
+        did = name[:-5]
+        if did in ack_ids or did in applied:
+            continue
+        d = as_dict(parse_json(blob(inbox[name]), {}))
+        pending.append({"decision_id": d.get("decision_id") or did, "job_id": d.get("job_id"),
+                        "version": d.get("version"), "action": d.get("action"),
+                        "ts": _parse_ts(d.get("timestamp"))})
+    pending.sort(key=lambda p: p["ts"])
+    seen, dups = set(), 0
+    for p in pending:
+        key = (p["job_id"], p["version"], p["action"])
+        dups += key in seen
+        seen.add(key)
+    return {"pending": pending, "duplicates": dups,
+            "oldest_age_s": (time.time() - pending[0]["ts"]) if pending else 0.0,
+            "heartbeat_h": hours_since(ms.get("last_heartbeat"))}
+
 # ── Decision reconciliation ──
 # 1) Recover in-flight decisions written from another session/device or before a reload.
 for v in versions:
@@ -610,13 +667,42 @@ if chosen != jid:
     st.rerun()
 
 
+# ───────────────────────── sync health (real bus data) ─────────────────────────
+HEALTH = sync_health()
+if HEALTH is None:
+    st.markdown("<div class='review warn'><b>Sync</b> · no se pudo leer el inbox/ACK en GitHub. Reintentando.</div>", unsafe_allow_html=True)
+else:
+    stale_pending = [p for p in HEALTH["pending"] if time.time() - p["ts"] > ACK_TIMEOUT_S]
+    if stale_pending:
+        items = ", ".join(f"{p['job_id']} {p['version']} ({p['action']})" for p in stale_pending[:4])
+        dup = f" · {HEALTH['duplicates']} duplicada(s)" if HEALTH["duplicates"] else ""
+        st.markdown(
+            f"<div class='review red'><b>Backend detenido</b> · {len(stale_pending)} decisión(es) sin procesar, "
+            f"la más antigua hace {esc(human_age(HEALTH['oldest_age_s'] / 3600))}{esc(dup)}: {esc(items)}. "
+            f"Muse/sync daemon no está consumiendo el inbox; nada de esto está aplicado todavía.</div>",
+            unsafe_allow_html=True)
+    hb = HEALTH["heartbeat_h"]
+    if hb > HEARTBEAT_STALE_H:
+        st.caption(f"Sin actividad registrada de Muse · último heartbeat hace {human_age(hb)}"
+                   + (f" · última tarea: {ms.get('current_task')}" if ms.get("current_task") else ""))
+
+
 # ───────────────────────── Muse yes/no blocker ─────────────────────────
 ms_blocked = ms.get("status") == "BLOCKED_ON_ELVIN"
 q = str(ms.get("needs_decision") or "").strip()
 q_key = f"{q}|{ms.get('question_id', '')}"
+# An asset approval (or publish authorization) is only valid as a job/version decision.
+# A free-form yes/no is not bound to an asset, version, supervisor verdict or sha.
+q_is_asset_approval = bool(ms.get("asset")) or bool(ASSET_APPROVAL_RE.search(q))
 if not ms_blocked:
     st.session_state.answered_q = None
-if ms_blocked and q and st.session_state.answered_q != q_key:
+if ms_blocked and q and q_is_asset_approval:
+    st.markdown(
+        "<div class='review red'><b>Aprobación fuera del flujo bloqueada</b> · Muse pide aprobar un asset por "
+        "pregunta libre, sin job/versión ni veredicto del supervisor. Debe registrarlo en jobs/ y pasar por el "
+        f"supervisor; la decisión se toma aquí sobre la versión. Pregunta: {esc(q[:300])}</div>",
+        unsafe_allow_html=True)
+elif ms_blocked and q and st.session_state.answered_q != q_key:
     if MS_JOB and MS_JOB != jid:
         st.caption(f"Pregunta de Muse sobre el job {MS_JOB}")
     st.warning(q)
@@ -658,6 +744,16 @@ def send_decision(action, note=""):
         clear_bus_cache()
         st.warning("Esta versión ya tiene una decisión de Elvin registrada.")
         st.rerun()
+    # Bind the decision to the exact asset blob Elvin is looking at.
+    shown_typ, shown = asset_info(sel)
+    fresh_asset = next((fresh_files.get(f"asset.{e}") for e in ("mp4", "png", "jpg", "jpeg") if fresh_files.get(f"asset.{e}")), None)
+    if not shown or not fresh_asset:
+        st.error("Esta versión no tiene asset sincronizado; no se puede decidir sobre ella.")
+        return
+    if shown.get("sha") != fresh_asset.get("sha"):
+        clear_bus_cache()
+        st.warning("El asset de esta versión cambió desde que lo abriste. Revísalo de nuevo antes de decidir.")
+        st.rerun()
     rec, ok = inbox_decision_for(sel, fresh=True)
     if not ok:
         st.error("No se pudo verificar el inbox de decisiones en GitHub. Reintenta.")
@@ -666,13 +762,24 @@ def send_decision(action, note=""):
         st.session_state.inflight[k] = rec
         set_notice("Ya existe una decisión para esta versión en el inbox · esperando ACK del backend…")
         st.rerun()
-    did = str(uuid.uuid4())
-    obj = {"decision_id": did, "job_id": jid, "version": sel, "action": action, "timestamp": now_iso(), "note": note.strip()}
+    asset_file = fresh_asset.get("path", "").rsplit("/", 1)[-1]
+    # Deterministic id: the same job/version/asset/action always maps to the same inbox file,
+    # so a double tap or a stale API read hits "already exists" instead of creating a duplicate.
+    did = str(uuid.uuid5(DECISION_NS, f"{jid}|{sel}|{fresh_asset.get('sha')}|{action}"))
+    obj = {"decision_id": did, "job_id": jid, "version": sel, "action": action, "timestamp": now_iso(),
+           "note": note.strip(), "asset_file": asset_file, "asset_sha": fresh_asset.get("sha")}
     ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"decision {action} {jid} {sel}", create_only=True)
+    already = not ok and d.startswith("HTTP 422")
+    if already:
+        # Already written (by this or another session): treat as sent, never write a second one.
+        ok = True
     if ok:
         st.session_state.inflight[k] = {"decision_id": did, "job_id": jid, "version": sel, "action": action,
                                         "sent_at": time.time(), "ack_status": ""}
-        st.session_state.notice = None   # the decision block already shows "Decisión enviada"
+        if already:
+            set_notice("Esta decisión ya estaba enviada · esperando ACK del backend…")
+        else:
+            st.session_state.notice = None   # the decision block already shows "Decisión enviada"
         st.session_state.change_open = False
         gh_dir.clear(); gh_tree.clear()
         st.rerun()
