@@ -1,4 +1,4 @@
-"""KAIA VALE — Mission Control v6.8.
+"""KAIA VALE — Mission Control v6.9.
 Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
 decision records only gain additive fields (asset_file, asset_sha = SHA-256 of the asset bytes, asset_git_sha).
 - Asset approvals only through job/version decisions: Muse's yes/no channel can no
@@ -12,6 +12,8 @@ decision records only gain additive fields (asset_file, asset_sha = SHA-256 of t
   decision records (e.g. chat approvals) are shown as not valid, never as approved.
 - v6.8: QC panel reads the supervisor's current visual_coverage (Spanish groups); versions
   without decision buttons explain why (CORREGIR / ESCALAR / not synced).
+- v6.9: publish/v1 — authorize/revoke publication separately from approve_final, shown only
+  when the backend declares protocol/capabilities.json publish_v1=true.
 """
 import base64, hashlib, hmac, html, inspect, json, re, time, uuid
 from datetime import datetime, timezone
@@ -20,7 +22,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v6.8"
+APP_VERSION = "v6.9"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -535,8 +537,8 @@ def inbox_decision_for(vn, *, fresh=False):
         if not name.endswith(".json"):
             continue
         d = as_dict(parse_json(blob(inbox[name]), {}))
-        if d.get("job_id") != jid or d.get("version") != vn:
-            continue
+        if d.get("job_id") != jid or d.get("version") != vn or d.get("action") not in DECISION_LABELS:
+            continue   # publish/v1 messages are not content decisions
         return {"decision_id": d.get("decision_id") or name[:-5], "job_id": jid, "version": vn,
                 "action": d.get("action"), "sent_at": _parse_ts(d.get("timestamp")), "ack_status": ""}, True
     if fresh:
@@ -545,7 +547,8 @@ def inbox_decision_for(vn, *, fresh=False):
             return None, False
         for path in recent:
             a = as_dict(gh_json(path, {}, fresh=True))
-            if a.get("job_id") == jid and a.get("version") == vn and str(a.get("status", "")).lower() in ACK_OK:
+            if (a.get("job_id") == jid and a.get("version") == vn and a.get("action") in DECISION_LABELS
+                    and str(a.get("status", "")).lower() in ACK_OK):
                 return {"decision_id": a.get("decision_id") or path.rsplit("/", 1)[-1][:-5], "job_id": jid,
                         "version": vn, "action": a.get("action"), "sent_at": time.time(), "ack_status": "accepted"}, True
     return None, True
@@ -1038,6 +1041,187 @@ def render_decision_block():
                     "Los botones aparecen cuando el supervisor la deja en READY_FOR_ELVIN_REVIEW.</div>", unsafe_allow_html=True)
 
 
+# ───────────────────────── publish/v1 (protocol/PUBLISH_PROTOCOL.md) ─────────────────────────
+PUB_STATUS = {"authorized": ("Autorizada", "violet"), "executing": ("Publicando…", "violet"),
+              "executed": ("Publicada", "green"), "failed": ("Falló", "red"),
+              "revoked": ("Revocada", "amber"), "expired": ("Vencida", "amber")}
+PUB_ACTIVE = {"authorized", "executing"}
+OP_LABELS = {"feed_post": "Post en feed", "reel": "Reel", "story": "Story", "carousel": "Carrusel",
+             "video": "Video", "post": "Post"}
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+except Exception:   # tzdata missing: fall back to UTC (shown explicitly in the UI)
+    LOCAL_TZ = timezone.utc
+
+def publish_caps():
+    caps = as_dict(gh_json("protocol/capabilities.json", {}))
+    targets = as_dict(gh_json("protocol/schemas/targets.json", {}))
+    ok = caps.get("publish_v1") is True and targets.get("schema") == "publish/v1" and bool(targets.get("platforms"))
+    return ok, caps, targets
+
+def publish_records(vn):
+    files = gh_dir(f"jobs/{jid}/versions/{vn}/publish") or {}
+    recs = [as_dict(parse_json(blob(info), {})) for name, info in sorted(files.items()) if name.endswith(".json")]
+    return [r for r in recs if r.get("authorization_id")]
+
+def publish_pending(vn, *, fresh=False):
+    """publish/v1 inbox messages for jid/vn without ACK. Returns (list, ok)."""
+    inbox = _tree("decisions/inbox") if fresh else gh_tree("decisions/inbox")
+    acks = _tree("decisions/acks") if fresh else gh_tree("decisions/acks")
+    if inbox is None or acks is None:
+        return [], False
+    out = []
+    for name in sorted(set(inbox) - set(acks)):
+        d = as_dict(parse_json(blob(inbox[name]), {}))
+        if d.get("job_id") == jid and d.get("version") == vn and d.get("action") in ("authorize_publish", "revoke_publish"):
+            out.append(d)
+    return out, True
+
+def _to_utc_iso(dt):
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def send_publish_authorization(targets, platform, operation, caption, scheduled_local):
+    """Fresh checks against the bus, then a create-only authorize_publish in the inbox."""
+    fresh_files = _dir(f"jobs/{jid}/versions/{sel}")
+    if fresh_files is None:
+        st.error("No se pudo verificar la versión en GitHub. Reintenta.")
+        return
+    appr = as_dict(parse_json(_fetch(f"jobs/{jid}/versions/{sel}/decision_elvin.json")[1], {}))
+    if appr.get("decision") != "approve_final":
+        st.error("Esta versión no tiene approve_final: primero aprueba el contenido.")
+        return
+    fresh_asset = next((fresh_files.get(f"asset.{e}") for e in ("mp4", "png", "jpg", "jpeg") if fresh_files.get(f"asset.{e}")), None)
+    _, shown = asset_info(sel)
+    if not fresh_asset or not shown or shown.get("sha") != fresh_asset.get("sha"):
+        clear_bus_cache()
+        st.warning("El asset cambió o no está sincronizado. Revísalo de nuevo antes de autorizar.")
+        st.rerun()
+    try:
+        data = gh_blob(fresh_asset["path"], fresh_asset["sha"])
+    except Exception:
+        st.error("No se pudo descargar el asset para verificarlo. Reintenta.")
+        return
+    asset_sha = hashlib.sha256(data).hexdigest()
+    if appr.get("asset_sha") and str(appr["asset_sha"]).lower() != asset_sha:
+        st.error("El asset actual no es el que aprobaste. No se puede autorizar.")
+        return
+    account = targets["platforms"][platform]["account"]
+    pend, ok = publish_pending(sel, fresh=True)
+    if not ok:
+        st.error("No se pudo verificar el inbox en GitHub. Reintenta.")
+        return
+    for d in pend:
+        if d.get("action") == "authorize_publish" and d.get("platform") == platform and d.get("operation") == operation:
+            st.info("Ya hay una autorización enviada para ese destino · esperando al backend.")
+            return
+    for r in publish_records(sel):
+        if r.get("status") in PUB_ACTIVE and r.get("platform") == platform and r.get("operation") == operation:
+            st.warning("Ya existe una autorización activa para ese destino. Revócala antes de reprogramar.")
+            return
+    now = datetime.now(timezone.utc)
+    sched_iso = _to_utc_iso(scheduled_local) if scheduled_local else None
+    if scheduled_local and scheduled_local.astimezone(timezone.utc) < now:
+        st.error("El horario elegido ya pasó.")
+        return
+    base_dt = scheduled_local.astimezone(timezone.utc) if scheduled_local else now
+    ttl_h = int(num(targets.get("default_ttl_hours"), 24)) or 24
+    expires_iso = _to_utc_iso(datetime.fromtimestamp(base_dt.timestamp() + ttl_h * 3600, timezone.utc))
+    ns = uuid.UUID(targets["ns_publish"])
+    cap_sha = hashlib.sha256(caption.encode("utf-8")).hexdigest()
+    did = str(uuid.uuid5(ns, f"{jid}|{sel}|{asset_sha}|{platform}|{account}|{operation}|{sched_iso}|{cap_sha}"))
+    obj = {"schema": "publish/v1", "decision_id": did, "action": "authorize_publish", "job_id": jid, "version": sel,
+           "timestamp": now_iso(), "note": "", "asset_file": fresh_asset["path"].rsplit("/", 1)[-1],
+           "asset_sha": asset_sha, "asset_git_sha": fresh_asset["sha"], "platform": platform, "account": account,
+           "operation": operation, "caption": caption, "scheduled_at": sched_iso, "expires_at": expires_iso}
+    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"authorize_publish {jid} {sel} {platform}/{operation}", create_only=True)
+    if ok or d.startswith("HTTP 422"):
+        set_notice("Autorización de publicación enviada · esperando confirmación del backend.", "success")
+        gh_dir.clear(); gh_tree.clear()
+        st.rerun()
+    else:
+        st.error(f"No se pudo enviar: {d}")
+
+def send_publish_revoke(auth_id, note=""):
+    pend, ok = publish_pending(sel, fresh=True)
+    if not ok:
+        st.error("No se pudo verificar el inbox en GitHub. Reintenta.")
+        return
+    if any(d.get("action") == "revoke_publish" and d.get("target_authorization_id") == auth_id for d in pend):
+        st.info("La revocación ya fue enviada.")
+        return
+    _, _, targets = publish_caps()
+    did = str(uuid.uuid5(uuid.UUID(targets["ns_publish"]), f"revoke|{auth_id}"))
+    obj = {"schema": "publish/v1", "decision_id": did, "action": "revoke_publish", "job_id": jid, "version": sel,
+           "target_authorization_id": auth_id, "timestamp": now_iso(), "note": note}
+    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"revoke_publish {jid} {sel}", create_only=True)
+    if ok or d.startswith("HTTP 422"):
+        set_notice("Revocación enviada · esperando confirmación del backend.", "success")
+        gh_dir.clear(); gh_tree.clear()
+        st.rerun()
+    else:
+        st.error(f"No se pudo enviar: {d}")
+
+def _fmt_local(iso):
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return dt.astimezone(LOCAL_TZ).strftime("%d %b %H:%M") + (" PT" if LOCAL_TZ is not timezone.utc else " UTC")
+    except Exception:
+        return "inmediata"
+
+def render_publish_block():
+    """Only for versions with a valid approve_final. Hidden behind capabilities.publish_v1."""
+    if decision_action(sel) != "approve_final" or inflight_for(sel):
+        return
+    enabled, caps, targets = publish_caps()
+    if not enabled:
+        st.markdown("<div class='review'><b>Publicación</b> · contenido aprobado. La autorización de publicación "
+                    "se activa cuando el backend de Muse soporte publish/v1. Aprobar no publica.</div>", unsafe_allow_html=True)
+        return
+    recs = publish_records(sel)
+    pend, _ = publish_pending(sel)
+    rows = []
+    for r in recs:
+        label, tone = PUB_STATUS.get(r.get("status"), (r.get("status") or "?", ""))
+        ex = as_dict(r.get("execution"))
+        extra = f" · {esc(ex.get('remote_url') or ex.get('remote_id') or '')}" if r.get("status") == "executed" else ""
+        extra += f" · {esc(ex.get('error') or '')}" if r.get("status") == "failed" else ""
+        rows.append(f"<div class='find'><span class='badge {tone}'>{esc(label)}</span> {esc(r.get('platform'))} · "
+                    f"{esc(OP_LABELS.get(r.get('operation'), r.get('operation')))} · {esc(_fmt_local(r.get('scheduled_at')))}{extra}</div>")
+    for d in pend:
+        what = "Autorización" if d.get("action") == "authorize_publish" else "Revocación"
+        rows.append(f"<div class='find'><span class='badge violet'>{what} enviada</span> esperando al backend…</div>")
+    st.markdown(f"<div class='ins'><div class='ins-title'>Publicación</div>{''.join(rows) or '<div class=small>Sin autorizaciones.</div>'}</div>",
+                unsafe_allow_html=True)
+    for r in recs:
+        if r.get("status") == "authorized" and not any(d.get("target_authorization_id") == r["authorization_id"] for d in pend):
+            if st.button(f"Revocar {r.get('platform')} · {OP_LABELS.get(r.get('operation'), r.get('operation'))}",
+                         key=f"pub_revoke_{r['authorization_id']}", width="stretch"):
+                send_publish_revoke(r["authorization_id"])
+    with st.expander("Autorizar publicación"):
+        plats = list(targets["platforms"].keys())
+        platform = st.selectbox("Plataforma", plats, key="pub_platform")
+        ops = targets["platforms"][platform]["operations"]
+        operation = st.selectbox("Formato", ops, format_func=lambda o: OP_LABELS.get(o, o), key="pub_operation")
+        st.caption(f"Cuenta: {targets['platforms'][platform]['account']}")
+        proposal = vjson(sel, "publish_proposal.json")
+        caption = st.text_area("Caption exacto (incluye hashtags)", value=str(proposal.get("caption") or ""), key="pub_caption")
+        when = st.radio("Cuándo", ("Ahora", "Programar"), horizontal=True, key="pub_when")
+        scheduled = None
+        if when == "Programar":
+            c1, c2 = st.columns(2)
+            day = c1.date_input("Día", key="pub_day")
+            hour = c2.time_input("Hora (PT)" if LOCAL_TZ is not timezone.utc else "Hora (UTC)", key="pub_time")
+            scheduled = datetime.combine(day, hour).replace(tzinfo=LOCAL_TZ)
+        confirm = st.checkbox(f"Confirmo publicar {sel} de {jid} en {platform} ({OP_LABELS.get(operation, operation)}), una sola vez.",
+                              key="pub_confirm")
+        if st.button("Autorizar publicación", key="pub_send", type="primary", width="stretch", disabled=not confirm):
+            if not caption.strip() and operation not in as_list(targets.get("caption_optional_operations")):
+                st.error("Escribe el caption.")
+            else:
+                send_publish_authorization(targets, platform, operation, caption, scheduled)
+
+
 # ───────────────────────── tabs ─────────────────────────
 TAB = st.session_state.tab
 if TAB == "Studio":
@@ -1082,6 +1266,7 @@ if TAB == "Studio":
             st.markdown(f"<div class='mobile-only'>{inspector_html(sel, with_header=False, with_specs=False)}</div>", unsafe_allow_html=True)
 
             render_decision_block()
+            render_publish_block()
 
             with st.container(key="kv_tools"):
                 opts = list(reversed(version_ids))
