@@ -1,6 +1,6 @@
-"""KAIA VALE — Mission Control v6.6.
+"""KAIA VALE — Mission Control v6.7.
 Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
-decision records only gain additive fields (asset_file, asset_sha).
+decision records only gain additive fields (asset_file, asset_sha = SHA-256 of the asset bytes, asset_git_sha).
 - Asset approvals only through job/version decisions: Muse's yes/no channel can no
   longer approve an asset that is not registered as a version.
 - Decisions are bound to the exact asset blob (sha) and are idempotent (uuid5 id +
@@ -8,15 +8,17 @@ decision records only gain additive fields (asset_file, asset_sha).
 - Sync health banner: unprocessed inbox decisions and Muse heartbeat age are shown
   from real bus data, so a stopped backend is visible instead of looking "Idle".
 - Default job = one waiting for Elvin, else the most recently updated.
+- v6.7: asset_sha is SHA-256 of the asset bytes (what the backend verifies); non-protocol
+  decision records (e.g. chat approvals) are shown as not valid, never as approved.
 """
-import base64, hmac, html, inspect, json, re, time, uuid
+import base64, hashlib, hmac, html, inspect, json, re, time, uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v6.6"
+APP_VERSION = "v6.7"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -351,8 +353,12 @@ def _parse_ts_or(iso, fallback):
         return fallback
 
 def _job_waiting(j):
-    return any(isinstance(v, dict) and v.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not v.get("decidido")
-               for v in as_list(j.get("versions")))
+    # Waiting = the LATEST version is ready for Elvin and undecided (older superseded versions don't count).
+    vs = [v for v in as_list(j.get("versions")) if isinstance(v, dict) and v.get("version")]
+    if not vs:
+        return False
+    last = max(vs, key=lambda v: int(str(v["version"]).lstrip("vV") or -1) if str(v["version"]).lstrip("vV").isdigit() else -1)
+    return last.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not last.get("decidido")
 
 jobs = sorted(jobs, key=_job_sort_key)
 job_ids = [j["job_id"] for j in jobs]
@@ -432,10 +438,23 @@ def decision_action(vn):
     if local:
         return local
     d = vjson(vn, "decision_elvin.json")
-    return d.get("decision") or d.get("action")
+    act = d.get("decision") or d.get("action")
+    # Only protocol actions are decisions. Historical records such as
+    # "chat_approval_sin_validez" must never render as approved.
+    return act if act in DECISION_LABELS else None
+
+def invalid_decision(vn):
+    """Value of a decision_elvin.json that is NOT a protocol action (e.g. a chat approval), else None."""
+    if not vn:
+        return None
+    d = vjson(vn, "decision_elvin.json")
+    act = d.get("decision") or d.get("action")
+    return act if act and act not in DECISION_LABELS else None
 
 def is_decided(vn):
-    return bool(vinfo(vn).get("decidido")) or bool(decision_action(vn))
+    if decision_action(vn):
+        return True
+    return bool(vinfo(vn).get("decidido")) and not invalid_decision(vn)
 
 def _parse_ts(iso):
     try:
@@ -763,11 +782,19 @@ def send_decision(action, note=""):
         set_notice("Ya existe una decisión para esta versión en el inbox · esperando ACK del backend…")
         st.rerun()
     asset_file = fresh_asset.get("path", "").rsplit("/", 1)[-1]
+    # The backend verifies asset_sha as SHA-256 of the asset bytes (not the git blob sha).
+    try:
+        asset_bytes = gh_blob(fresh_asset["path"], fresh_asset["sha"])
+    except Exception:
+        st.error("No se pudo descargar el asset para verificarlo. Reintenta.")
+        return
+    asset_sha256 = hashlib.sha256(asset_bytes).hexdigest()
     # Deterministic id: the same job/version/asset/action always maps to the same inbox file,
     # so a double tap or a stale API read hits "already exists" instead of creating a duplicate.
     did = str(uuid.uuid5(DECISION_NS, f"{jid}|{sel}|{fresh_asset.get('sha')}|{action}"))
     obj = {"decision_id": did, "job_id": jid, "version": sel, "action": action, "timestamp": now_iso(),
-           "note": note.strip(), "asset_file": asset_file, "asset_sha": fresh_asset.get("sha")}
+           "note": note.strip(), "asset_file": asset_file, "asset_sha": asset_sha256,
+           "asset_git_sha": fresh_asset.get("sha")}
     ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"decision {action} {jid} {sel}", create_only=True)
     already = not ok and d.startswith("HTTP 422")
     if already:
@@ -870,6 +897,8 @@ def status_badge(vn):
         return "Decision sent", "violet"
     if act:
         return DECISION_LABELS.get(act, "Decided by Elvin"), DECISION_TONE.get(act, "green")
+    if invalid_decision(vn):
+        return "Chat approval · not valid", "amber"
     ve = vinfo(vn).get("veredicto_efectivo") or ""
     if ve in VERDICT_LABELS:
         return VERDICT_LABELS[ve]
