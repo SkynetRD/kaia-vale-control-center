@@ -684,8 +684,10 @@ st.markdown(
     unsafe_allow_html=True)
 with st.container(key="kv_nav"):
     nav = st.columns([.72, .72, .72, .72, 4.6, .6])
+    _n_review = sum(1 for _j in jobs for _v in job_versions(_j["job_id"]) if is_reviewable(_v["version"], _j["job_id"]))
     for i, name in enumerate(("Studio", "Agenda", "Queue", "Model")):
-        if nav[i].button(name, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
+        label = f"{name} · {_n_review}" if name == "Agenda" and _n_review else name
+        if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
             st.session_state.tab = name
             st.session_state.compare = False
             st.session_state.focus = False
@@ -970,9 +972,14 @@ def status_badge(vn, job_id=None):
         return VERDICT_LABELS[ve]
     return (ve.replace("_", " ").capitalize() if ve else "—"), ""
 
+def is_suggestive(vn, job_id=None):
+    """Supervisor tag (verdict.json etiquetas: ["sugerente"]): allowed content Elvin should judge himself."""
+    return "sugerente" in [str(x).lower() for x in as_list(verdict(vn, job_id).get("etiquetas"))]
+
 def badge_html(vn, job_id=None):
     label, tone = status_badge(vn, job_id)
-    return f"<span class='badge {tone}'>{esc(label)}</span>"
+    extra = "<span class='badge amber'>🌶 Sugerente</span>" if is_suggestive(vn, job_id) else ""
+    return f"<span class='badge {tone}'>{esc(label)}</span>{extra}"
 
 def pipeline_items_html():
     stages, active_idx, stopped_idx = stage_data()
@@ -1079,8 +1086,8 @@ def publish_caps():
     ok = caps.get("publish_v1") is True and targets.get("schema") == "publish/v1" and bool(targets.get("platforms"))
     return ok, caps, targets
 
-def publish_records(vn):
-    files = gh_dir(f"jobs/{jid}/versions/{vn}/publish") or {}
+def publish_records(vn, job_id=None):
+    files = gh_dir(f"jobs/{job_id or jid}/versions/{vn}/publish") or {}
     recs = [as_dict(parse_json(blob(info), {})) for name, info in sorted(files.items()) if name.endswith(".json")]
     return [r for r in recs if r.get("authorization_id")]
 
@@ -1188,6 +1195,39 @@ def _fmt_local(iso):
     except Exception:
         return "inmediata"
 
+def _proposal_when(proposal, plan):
+    """Local datetime proposed for publishing (publish_proposal.scheduled_for, else plan date+slot); None if absent/past."""
+    raw = proposal.get("scheduled_for") or (f"{plan.get('planned_for')}T{plan.get('slot')}" if plan.get("planned_for") and plan.get("slot") else "")
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    dt = dt.astimezone(LOCAL_TZ) if dt.tzinfo else dt.replace(tzinfo=LOCAL_TZ)
+    return dt if dt > datetime.now(LOCAL_TZ) else None
+
+def _apply_publish_defaults(targets, proposal):
+    """Prefill the form once per job|version: platform/format/caption/time from Muse's proposal, else the plan."""
+    ctx = f"{jid}|{sel}"
+    if st.session_state.get("pub_ctx") == ctx:
+        return
+    for k in ("pub_platform", "pub_operation", "pub_caption", "pub_when", "pub_day", "pub_time", "pub_confirm"):
+        st.session_state.pop(k, None)
+    st.session_state.pub_ctx = ctx
+    plan = job_plan(jid)
+    plats = targets.get("platforms") or {}
+    platform = proposal.get("platform") or plan.get("platform")
+    if platform in plats:
+        st.session_state.pub_platform = platform
+        operation = proposal.get("operation") or plan.get("operation")
+        if operation in plats[platform].get("operations", []):
+            st.session_state.pub_operation = operation
+    st.session_state.pub_caption = str(proposal.get("caption") or "")
+    when = _proposal_when(proposal, plan)
+    if when:
+        st.session_state.pub_when = "Programar"
+        st.session_state.pub_day = when.date()
+        st.session_state.pub_time = when.time().replace(second=0, microsecond=0, tzinfo=None)
+
 def render_publish_block():
     """Only for versions with a valid approve_final. Hidden behind capabilities.publish_v1."""
     if decision_action(sel) != "approve_final" or inflight_for(sel):
@@ -1217,14 +1257,21 @@ def render_publish_block():
             if st.button(f"Revocar {r.get('platform')} · {OP_LABELS.get(r.get('operation'), r.get('operation'))}",
                          key=f"pub_revoke_{r['authorization_id']}", width="stretch"):
                 send_publish_revoke(r["authorization_id"])
-    with st.expander("Autorizar publicación"):
+    proposal = vjson(sel, "publish_proposal.json")
+    _apply_publish_defaults(targets, proposal)
+    if proposal.get("caption"):
+        st.caption("Caption, formato y hora propuestos por Muse. Revísalos; puedes editarlos antes de autorizar.")
+    with st.expander("Autorizar publicación", expanded=not any(r.get("status") in PUB_ACTIVE for r in recs)):
         plats = list(targets["platforms"].keys())
         platform = st.selectbox("Plataforma", plats, key="pub_platform")
         ops = targets["platforms"][platform]["operations"]
+        if st.session_state.get("pub_operation") not in ops:
+            st.session_state.pop("pub_operation", None)
         operation = st.selectbox("Formato", ops, format_func=lambda o: OP_LABELS.get(o, o), key="pub_operation")
         st.caption(f"Cuenta: {targets['platforms'][platform]['account']}")
-        proposal = vjson(sel, "publish_proposal.json")
-        caption = st.text_area("Caption exacto (incluye hashtags)", value=str(proposal.get("caption") or ""), key="pub_caption")
+        caption = st.text_area("Caption exacto (incluye hashtags)", key="pub_caption")
+        if proposal.get("rationale"):
+            st.caption(f"Por qué este caption: {proposal.get('rationale')}")
         when = st.radio("Cuándo", ("Ahora", "Programar"), horizontal=True, key="pub_when")
         scheduled = None
         if when == "Programar":
@@ -1303,8 +1350,8 @@ def _qc_line(vn, job_id):
         return "QC sin datos"
     return "QC: falla " + ", ".join(fails) if fails else "QC: todo OK"
 
-def render_agenda_card(job_id, plan, vn):
-    with st.container(border=True, key=f"ag_card_{job_id}_{vn}"):
+def render_agenda_card(job_id, plan, vn, kp="ag"):
+    with st.container(border=True, key=f"{kp}_card_{job_id}_{vn}"):
         title = plan.get("title") or job_id
         where = " · ".join(x for x in (plan.get("slot"), plan.get("platform"),
                                        OP_LABELS.get(plan.get("operation"), plan.get("operation"))) if x)
@@ -1318,27 +1365,27 @@ def render_agenda_card(job_id, plan, vn):
             st.markdown("<div class='review'><b>Decisión enviada</b> · esperando confirmación del backend.</div>", unsafe_allow_html=True)
         elif is_reviewable(vn, job_id):
             c1, c2, c3 = st.columns(3)
-            if c1.button("✕ Rechazar", key=f"ag_reject_{k}", width="stretch"):
+            if c1.button("✕ Rechazar", key=f"{kp}_reject_{k}", width="stretch"):
                 send_decision("reject", job_id=job_id, vn=vn)
-            if c2.button("↻ Cambios", key=f"ag_changes_{k}", width="stretch"):
-                st.session_state[f"ag_chg_open_{k}"] = not st.session_state.get(f"ag_chg_open_{k}", False)
+            if c2.button("↻ Cambios", key=f"{kp}_changes_{k}", width="stretch"):
+                st.session_state[f"{kp}_chg_open_{k}"] = not st.session_state.get(f"{kp}_chg_open_{k}", False)
                 st.rerun()
-            if c3.button("✓ Aprobar", key=f"ag_approve_{k}", type="primary", width="stretch"):
+            if c3.button("✓ Aprobar", key=f"{kp}_approve_{k}", type="primary", width="stretch"):
                 send_decision("approve_final", job_id=job_id, vn=vn)
-            if st.session_state.get(f"ag_chg_open_{k}"):
-                with st.form(f"ag_chg_form_{k}"):
+            if st.session_state.get(f"{kp}_chg_open_{k}"):
+                with st.form(f"{kp}_chg_form_{k}"):
                     note = st.text_area("Cambios", placeholder="Qué debe corregirse…", label_visibility="collapsed",
-                                        key=f"ag_chg_note_{k}")
+                                        key=f"{kp}_chg_note_{k}")
                     if st.form_submit_button("Enviar cambios", type="primary", width="stretch"):
                         if note.strip():
-                            st.session_state[f"ag_chg_open_{k}"] = False
+                            st.session_state[f"{kp}_chg_open_{k}"] = False
                             send_decision("request_changes", note, job_id=job_id, vn=vn)
                         else:
                             st.error("Escribe los cambios.")
         elif not decision_action(vn, job_id):
             ve = vinfo(vn, job_id).get("veredicto_efectivo") or "sin veredicto"
             st.caption(f"Sin decisión disponible: veredicto {ve}.")
-        if st.button("Abrir en Studio", key=f"ag_open_{k}", width="stretch"):
+        if st.button("Abrir en Studio", key=f"{kp}_open_{k}", width="stretch"):
             st.session_state.jid = job_id
             st.session_state.sel_ver = vn
             st.session_state.tab = "Studio"
@@ -1346,7 +1393,54 @@ def render_agenda_card(job_id, plan, vn):
             st.session_state.focus = False
             st.rerun()
 
+def needs_elvin():
+    """(to_review, to_authorize): versions waiting on Elvin across all jobs.
+    to_review: READY_FOR_ELVIN_REVIEW without decision. to_authorize: approved, publishing enabled, never authorized."""
+    enabled, _, _ = publish_caps()
+    review, authorize = [], []
+    for j in jobs:
+        jid_ = j["job_id"]
+        plan = job_plan(jid_)
+        for v in job_versions(jid_):
+            vn = v["version"]
+            if is_reviewable(vn, jid_):
+                review.append((jid_, plan, vn))
+            elif enabled and decision_action(vn, jid_) == "approve_final" and not inflight_for(vn, jid_):
+                if not any(r.get("status") in PUB_ACTIVE | {"executed"} for r in publish_records(vn, jid_)):
+                    authorize.append((jid_, plan, vn))
+    key = lambda it: (str(it[1].get("planned_for") or "9999"), str(it[1].get("slot") or "99:99"), it[0])
+    return sorted(review, key=key), sorted(authorize, key=key)
+
+def render_needs_elvin():
+    review, authorize = needs_elvin()
+    if not review and not authorize:
+        st.success("Nada espera por ti ahora mismo. Muse sigue produciendo.")
+        return
+    with st.container(key="ag_needs"):
+        st.markdown(f"<div class='pipe-title'>Necesita tu aprobación · {len(review)} por aprobar · "
+                    f"{len(authorize)} por autorizar publicación</div>", unsafe_allow_html=True)
+        for i in range(0, len(review), 2):
+            cols = st.columns(2)
+            for col, (j, p, vn) in zip(cols, review[i:i + 2]):
+                with col:
+                    if p.get("planned_for"):
+                        st.caption(f"Para {day_label(p['_date'])}")
+                    render_agenda_card(j, p, vn, kp="na")
+        for j, p, vn in authorize:
+            c1, c2 = st.columns([3, 1.2])
+            when = f" · {day_label(p['_date'])} {p.get('slot') or ''}" if p.get("planned_for") else ""
+            c1.markdown(f"<div class='find'><b>{esc(p.get('title') or j)} · {esc(vn)}</b> aprobada{esc(when)} · "
+                        "falta autorizar la publicación</div>", unsafe_allow_html=True)
+            if c2.button("Autorizar", key=f"na_pub_{j}_{vn}", width="stretch"):
+                st.session_state.jid = j
+                st.session_state.sel_ver = vn
+                st.session_state.tab = "Studio"
+                st.session_state.compare = False
+                st.session_state.focus = False
+                st.rerun()
+
 def render_agenda():
+    render_needs_elvin()
     by_day, unplanned = agenda_index()
     today = today_local()
     if "ag_day" not in st.session_state:
