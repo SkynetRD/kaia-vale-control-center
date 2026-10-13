@@ -1,4 +1,4 @@
-streamlit>=1.40
-streamlit-autorefresh>=1.0.1
-requests>=2.31
+streamlit>=1.65,<2
+streamlit-autorefresh>=1.0.1,<2
+requests>=2.31,<3
 pillow>=10.0
