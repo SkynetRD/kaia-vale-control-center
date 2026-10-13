@@ -187,7 +187,13 @@ def gh_json(path: str):
     return json.loads(b.decode()) if b else None
 
 
-def gh_put_json(path: str, obj: dict, msg: str) -> bool:
+def gh_put_json(path: str, obj: dict, msg: str) -> tuple[bool, str]:
+    """Escribe JSON al repo. Devuelve (ok, detalle).
+
+    El detalle incluye el HTTP real de GitHub para diagnosticar:
+    401=token inválido, 403=token sin permiso de escritura,
+    404=repo/ruta mal, -1=sin conexión.
+    """
     content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=1).encode()).decode()
     body = {"message": msg, "content": content}
     try:
@@ -197,9 +203,21 @@ def gh_put_json(path: str, obj: dict, msg: str) -> bool:
             body["sha"] = existing["sha"]
     except Exception:
         pass
-    r = requests.put(f"{API}/{path}", headers={**H, "Accept": "application/vnd.github+json"},
-                     json=body, timeout=20)
-    return r.status_code in (200, 201)
+    try:
+        r = requests.put(f"{API}/{path}", headers={**H, "Accept": "application/vnd.github+json"},
+                         json=body, timeout=20)
+    except Exception as e:
+        return (False, f"sin conexión: {e.__class__.__name__}")
+    if r.status_code in (200, 201):
+        return (True, f"HTTP {r.status_code}")
+    try:
+        detail = r.json().get("message", "")[:160]
+    except Exception:
+        detail = r.text[:160]
+    hint = {401: "token inválido o expirado — revisar GITHUB_TOKEN en Secrets",
+            403: "token sin permiso de escritura — el token necesita 'Contents: write'",
+            404: "repo o ruta no encontrada — revisar SYNC_REPO"}.get(r.status_code, "")
+    return (False, f"GitHub HTTP {r.status_code}: {detail} {hint}".strip())
 
 
 def gh_json_raw(path: str):
@@ -314,24 +332,12 @@ def send_decision(action: str, note: str) -> None:
     dec = {"decision_id": did, "job_id": jid, "version": cur,
            "action": action, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "note": note.strip()}
-    if gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}"):
-        st.success("Decisión enviada. Esperando ACK del reviewer-loop…")
-        for _ in range(20):
-            time.sleep(6)
-            ack = gh_json(f"decisions/acks/{did}.json")
-            gh_raw.clear()
-            if ack:
-                if ack["status"] == "accepted":
-                    st.success(f"✅ Aceptada: {ack['reason']}")
-                else:
-                    st.error(f"❌ Rechazada: {ack['reason']}")
-                with st.expander("Detalles del ACK"):
-                    st.json(ack)
-                break
-        else:
-            st.warning("Sin ACK todavía. Revisa en unos segundos.")
+    ok, detail = gh_put_json(f"decisions/inbox/{did}.json", dec, f"decision {action} {jid} {cur}")
+    if ok:
+        st.success("✅ Decisión enviada. El ACK del reviewer-loop aparecerá aquí en ~1 min (auto-refresh).")
+        st.caption(f"ID: `{did}`")
     else:
-        st.error("No se pudo escribir la decisión en el repo.")
+        st.error(f"No se pudo enviar la decisión. {detail}")
 
 
 def media_for(vn):
@@ -405,18 +411,20 @@ if _ms_top.get("status") == "BLOCKED_ON_ELVIN" and _ms_top.get("needs_decision")
         _ans = {"question": _q,
                 "answer": "yes",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        if gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes"):
+        _ok, _detail = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: yes")
+        if _ok:
             st.success("✅ Respuesta enviada: SÍ. Muse continuará.")
         else:
-            st.error("No se pudo enviar la respuesta.")
+            st.error(f"No se pudo enviar la respuesta. {_detail}")
     if _b2.button("❌ NO", key="elvin_no", use_container_width=True):
         _ans = {"question": _q,
                 "answer": "no",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        if gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no"):
+        _ok, _detail = gh_put_json("progress/elvin_answer.json", _ans, "elvin answer: no")
+        if _ok:
             st.success("Respuesta enviada: NO. Muse se detendrá.")
         else:
-            st.error("No se pudo enviar la respuesta.")
+            st.error(f"No se pudo enviar la respuesta. {_detail}")
 
 def build_events():
     """Eventos reales del job, ordenados. Sin invenciones."""
