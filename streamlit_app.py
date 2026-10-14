@@ -1,4 +1,4 @@
-"""KAIA VALE — Mission Control v7.0.
+"""KAIA VALE — Mission Control v8.0.
 Approval-path hardening over v6.5. GitHub bus and inbox + ACK protocol unchanged;
 decision records only gain additive fields (asset_file, asset_sha = SHA-256 of the asset bytes, asset_git_sha).
 - Asset approvals only through job/version decisions: Muse's yes/no channel can no
@@ -14,6 +14,11 @@ decision records only gain additive fields (asset_file, asset_sha = SHA-256 of t
   without decision buttons explain why (CORREGIR / ESCALAR / not synced).
 - v6.9: publish/v1 — authorize/revoke publication separately from approve_final, shown only
   when the backend declares protocol/capabilities.json publish_v1=true.
+- v8.0: speed + reliability. The whole branch is read with ONE recursive git-tree call (10 s cache) and files
+  are fetched by blob sha (cached): a rerun costs ~0 API calls instead of ~100. The 30 s full-page
+  st_autorefresh (which dropped clicks and re-fetched everything) is replaced by a fragment that polls the bus
+  and reruns only when something changed. Login survives page reloads (signed 30-day cookie). Approving a
+  piece removes it from the queue and Studio jumps to the next one waiting for Elvin.
 - v7.0: Agenda tab — proposals by planned day (jobs/<job>/plan.json, plan/v1) with
   approve / reject / request changes per image; same decision protocol as Studio.
 """
@@ -22,15 +27,18 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 import requests
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as components
 
-APP_VERSION = "v7.4"
+APP_VERSION = "v8.0"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
 ASSET_APPROVAL_RE = re.compile(r"aprob|apru[eé]b|autoriz|publica|regener", re.I)
-REFRESH_MS = 30_000
-PENDING_REFRESH_MS = 5_000
+WATCH_EVERY_S = 12          # cheap bus poll (1 API call, no full rerun unless something changed)
+WATCH_PENDING_S = 5         # faster poll while a decision waits for its ACK
+MIN_RERUN_GAP_S = 30        # never rerun the whole app more often than this because of background changes
+AUTH_COOKIE = "kv_auth"
+AUTH_DAYS = 30
 ACK_TIMEOUT_S = 600            # warn if the backend has not ACKed after 10 min
 NOTICE_TTL_S = 180             # how long decision notices stay visible
 MAX_LOGIN_ATTEMPTS = 5
@@ -59,6 +67,7 @@ except Exception:
     st.stop()
 
 API = f"https://api.github.com/repos/{REPO}/contents"
+GIT_API = f"https://api.github.com/repos/{REPO}"
 H_RAW = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.raw"}
 H_JSON = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
@@ -190,10 +199,65 @@ def _fetch(path):
     code, r = _get(path, H_RAW)
     return code, (r.content if code == 200 else None)
 
+@st.cache_resource(ttl=10, show_spinner=False)
+def gh_index():
+    """The whole branch in ONE call (recursive git tree). Every control-file lookup below is answered from
+    this index + blobs cached by sha, so a rerun costs ~1 API call instead of ~100.
+    Returns {'files': {path: entry}, 'dirs': {parent: {name: entry}}, 'subdirs': {parent: [names]}}; None if unavailable."""
+    try:
+        r = requests.get(f"{GIT_API}/git/trees/{quote(BRANCH, safe='')}", params={"recursive": "1"},
+                         headers=H_JSON, timeout=20)
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("truncated") or not isinstance(data.get("tree"), list):
+        return None
+    files, dirs, subdirs = {}, {}, {}
+    for e in data["tree"]:
+        if not isinstance(e, dict) or not e.get("path"):
+            continue
+        path = e["path"]
+        parent, _, name = path.rpartition("/")
+        if e.get("type") == "blob":
+            ent = {"sha": e.get("sha"), "path": path, "size": e.get("size", 0)}
+            files[path] = ent
+            dirs.setdefault(parent, {})[name] = ent
+        elif e.get("type") == "tree":
+            subdirs.setdefault(parent, []).append(name)
+    for v in subdirs.values():
+        v.sort()
+    return {"files": files, "dirs": dirs, "subdirs": subdirs}
+
 @st.cache_data(ttl=20, show_spinner=False, max_entries=500)
-def gh_fetch(path):
-    """Small, rapidly-changing control files (20 s cache)."""
+def _gh_fetch_legacy(path):
     return _fetch(path)
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=3000)
+def gh_blob_by_sha(sha):
+    """Immutable: a git blob never changes, so it is cached by sha."""
+    r = requests.get(f"{GIT_API}/git/blobs/{sha}", headers=H_RAW, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    return r.content
+
+def gh_fetch(path):
+    """Small control files. (status, bytes); 404 when the path is not in the branch."""
+    idx = gh_index()
+    if idx is not None:
+        ent = idx["files"].get(path)
+        if ent is None:
+            return 404, None
+        if num(ent.get("size")) <= 2_000_000:
+            try:
+                return 200, gh_blob_by_sha(ent["sha"])
+            except Exception:
+                pass
+    return _gh_fetch_legacy(path)
 
 def _dir(path):
     code, r = _get(path, H_JSON)
@@ -211,8 +275,7 @@ def _dir(path):
             for e in data if isinstance(e, dict) and e.get("type") == "file" and e.get("name")}
 
 @st.cache_data(ttl=20, show_spinner=False, max_entries=50)
-def gh_subdirs(path):
-    """Names of subdirectories of path; [] if missing or on error."""
+def _gh_subdirs_legacy(path):
     code, r = _get(path, H_JSON)
     if code != 200:
         return []
@@ -223,9 +286,27 @@ def gh_subdirs(path):
     return sorted(e["name"] for e in data if isinstance(data, list) and isinstance(e, dict) and e.get("type") == "dir" and e.get("name"))
 
 @st.cache_data(ttl=20, show_spinner=False, max_entries=300)
+def _gh_dir_legacy(path):
+    return _dir(path)
+
+def gh_subdirs(path):
+    """Names of subdirectories of path; [] if missing or on error."""
+    idx = gh_index()
+    return list(idx["subdirs"].get(str(path), [])) if idx is not None else _gh_subdirs_legacy(path)
+
 def gh_dir(path):
     """Directory listing {name: {sha, path, size}}; {} if missing; None on error."""
-    return _dir(path)
+    idx = gh_index()
+    if idx is None:
+        return _gh_dir_legacy(path)
+    return {n: dict(e) for n, e in idx["dirs"].get(str(path), {}).items()}
+
+def _clear_all_listings():
+    for f in (gh_index, _gh_fetch_legacy, _gh_subdirs_legacy, _gh_dir_legacy):
+        f.clear()
+gh_fetch.clear = _clear_all_listings
+gh_dir.clear = _clear_all_listings
+gh_subdirs.clear = _clear_all_listings
 
 def _blob(path):
     code, b = _fetch(path)
@@ -333,6 +414,37 @@ def now_iso():
 
 
 # ───────────────────────── auth ─────────────────────────
+def _auth_token(exp):
+    sig = hmac.new(PASSWORD.encode("utf-8"), f"kv-auth|{exp}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+def _auth_token_ok(tok):
+    try:
+        exp, sig = str(tok).split(".", 1)
+        return int(exp) > time.time() and hmac.compare_digest(sig, _auth_token(int(exp)).split(".", 1)[1])
+    except Exception:
+        return False
+
+def _cookie_script(value, max_age):
+    # Runs inside the component iframe (same origin as the app); Secure only on https.
+    return ("<script>try{var s=location.protocol==='https:'?'; Secure':'';"
+            f"document.cookie='{AUTH_COOKIE}={value}; max-age={max_age}; path=/; SameSite=Lax'+s;"
+            "}catch(e){}</script>")
+
+def _run_html(code):
+    """Invisible same-origin iframe that runs a tiny script (st.iframe on current Streamlit; components.html before)."""
+    if hasattr(st, "iframe"):
+        st.iframe(code, height=1)
+    else:
+        components.html(code, height=0)
+
+if not st.session_state.auth and not st.session_state.get("cookie_clear"):
+    try:
+        if _auth_token_ok(st.context.cookies.get(AUTH_COOKIE)):
+            st.session_state.auth = True
+    except Exception:
+        pass
+
 if not st.session_state.auth:
     st.markdown("<div style='max-width:360px;margin:14vh auto 1rem;text-align:center'><div class='kv-logo'><span>KAIA VALE</span></div><h2>Mission Control</h2></div>", unsafe_allow_html=True)
     with st.form("login"):
@@ -345,6 +457,7 @@ if not st.session_state.auth:
         elif hmac.compare_digest(pw.encode("utf-8"), PASSWORD.encode("utf-8")):
             st.session_state.auth = True
             st.session_state.login_attempts = 0
+            st.session_state.cookie_to_set = _auth_token(int(time.time()) + AUTH_DAYS * 86400)
             st.rerun()
         else:
             st.session_state.login_attempts += 1
@@ -354,10 +467,44 @@ if not st.session_state.auth:
                 st.error(f"Password incorrecto. Bloqueado {LOGIN_LOCKOUT_S} s.")
             else:
                 st.error("Password incorrecto.")
+    if st.session_state.pop("cookie_clear", False):
+        _run_html(_cookie_script("", 0))
     st.stop()
 
-# Non-blocking, browser-side refresh (no sleep()).
-st_autorefresh(interval=REFRESH_MS, limit=None, key="mission_control_refresh")
+_ck = st.session_state.pop("cookie_to_set", None)
+if _ck:
+    _run_html(_cookie_script(_ck, AUTH_DAYS * 86400))
+
+# Background refresh: a tiny fragment polls the bus (1 cached API call) and only reruns the whole app when
+# something actually changed, never interrupting a click for nothing (the old 30 s st_autorefresh did).
+def _bus_sig():
+    idx = gh_index()
+    if idx is None:
+        return None
+    h = hashlib.md5()
+    for p_, e_ in idx["files"].items():
+        h.update(p_.encode("utf-8")); h.update(str(e_.get("sha")).encode("utf-8"))
+    return h.hexdigest()
+
+def _make_watcher(every):
+    @st.fragment(run_every=every)
+    def _watch():
+        pending = bool(st.session_state.get("inflight"))
+        if pending:
+            gh_index.clear()          # waiting for an ACK: look at the bus right now
+        sig = _bus_sig()
+        last = st.session_state.get("bus_sig")
+        if sig is None:
+            return
+        if last is None:
+            st.session_state.bus_sig = sig
+            return
+        if sig != last and (pending or time.time() - st.session_state.get("last_full", 0) >= MIN_RERUN_GAP_S):
+            st.rerun()
+    return _watch
+st.session_state.bus_sig = _bus_sig()
+st.session_state.last_full = time.time()
+_make_watcher(WATCH_PENDING_S if st.session_state.get("inflight") else WATCH_EVERY_S)()
 
 
 # ───────────────────────── snapshot / job ─────────────────────────
@@ -504,8 +651,6 @@ def _parse_ts(iso):
     except Exception:
         return time.time()
 
-GIT_API = f"https://api.github.com/repos/{REPO}"
-
 def _tree(dir_path):
     """All files of a directory via the Git Trees API (no 1000-file limit of the contents API).
     Returns {name: {sha, path}}; {} if the directory does not exist; None on error."""
@@ -536,8 +681,15 @@ def _tree(dir_path):
             for e in items if isinstance(e, dict) and e.get("type") == "blob" and e.get("path")}
 
 @st.cache_data(ttl=20, show_spinner=False, max_entries=20)
-def gh_tree(dir_path):
+def _gh_tree_legacy(dir_path):
     return _tree(dir_path)
+
+def gh_tree(dir_path):
+    idx = gh_index()
+    if idx is None:
+        return _gh_tree_legacy(dir_path)
+    return {n: {"sha": e["sha"], "path": f"{dir_path}/{n}"} for n, e in idx["dirs"].get(str(dir_path), {}).items()}
+gh_tree.clear = lambda: (_clear_all_listings(), _gh_tree_legacy.clear())
 
 def _recent_ack_paths():
     """ACK files added in the last RECENT_ACK_WINDOW_H hours (via commits). None on error."""
@@ -677,9 +829,6 @@ CUR_INFLIGHT = bool(inflight_for(cur))
 CUR_DECISION = decision_action(cur)
 JOB_HAS_INFLIGHT = bool(st.session_state.inflight)
 
-if JOB_HAS_INFLIGHT:
-    st_autorefresh(interval=PENDING_REFRESH_MS, limit=None, key="pending_decision_refresh")
-
 def live_state():
     s = state.get("state", "")
     mst = ms.get("status", "") if MS_APPLIES else ""
@@ -736,6 +885,7 @@ with st.container(key="kv_nav"):
     if nav[5].button("Salir", key="logout", width="stretch"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        st.session_state["cookie_clear"] = True
         st.rerun()
 if chosen != jid:
     # In-flight decisions are kept (keyed by job|version) so switching jobs never re-enables decided controls.
@@ -872,6 +1022,19 @@ def send_decision(action, note="", job_id=None, vn=None):
             st.session_state.notice = None   # the decision block already shows "Decisión enviada"
         st.session_state.change_open = False
         gh_dir.clear(); gh_tree.clear()
+        if st.session_state.tab == "Studio":
+            # The decided piece leaves the queue: open the next one waiting for Elvin, or say there is none.
+            try:
+                nxt = next(((j_, v_) for j_, _p, v_ in needs_elvin()[0] if (j_, v_) != (J, V)), None)
+            except Exception:
+                nxt = None
+            if nxt:
+                st.session_state.jid, st.session_state.sel_ver = nxt
+                st.session_state.compare = False
+                st.session_state.focus = False
+                set_notice(f"Decisión enviada · siguiente por aprobar: {nxt[0]} {nxt[1]}.", "success")
+            else:
+                set_notice("Decisión enviada · no hay más piezas por aprobar.", "success")
         st.rerun()
     else:
         st.error(f"No se pudo enviar: {d}")
@@ -1524,17 +1687,23 @@ def _go_studio(j, vn):
 def render_needs_elvin():
     review, authorize, unplanned = needs_elvin()
     if not review and not authorize:
-        st.success("Nada espera por ti ahora mismo. Muse sigue produciendo.")
+        st.success("✓ Nada espera por ti ahora mismo. Muse sigue produciendo.")
     else:
         with st.container(key="ag_needs"):
             st.markdown(f"<div class='pipe-title'>Necesita tu aprobación · {len(review)} por aprobar · "
                         f"{len(authorize)} por autorizar publicación</div>", unsafe_allow_html=True)
-            _auth_grid = st.container(key="ag_review_grid")
-            for j, p, vn in review:
-                with _auth_grid.container(key=f"na_item_{j}_{vn}"):
-                    if p.get("planned_for"):
-                        st.caption(f"Para {day_label(p['_date'])}")
-                    render_agenda_card(j, p, vn, kp="na")
+            if review:
+                _grid = st.container(key="ag_review_grid")
+                for j, p, vn in review:
+                    with _grid.container(key=f"na_item_{j}_{vn}"):
+                        if p.get("planned_for"):
+                            st.caption(f"Para {day_label(p['_date'])}")
+                        render_agenda_card(j, p, vn, kp="na")
+            else:
+                st.success("✓ No hay más piezas por aprobar.")
+            if authorize:
+                st.caption("Aprobadas: falta autorizar su publicación (hora, formato y caption).")
+            _auth_grid = st.container(key="ag_auth_grid")
             for j, p, vn in authorize:
                 fmt, when, cap, has_prop = _pub_summary(j, vn, p)
                 with _auth_grid.container(border=True, key=f"na_auth_{j}_{vn}"):
