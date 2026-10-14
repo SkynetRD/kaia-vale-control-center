@@ -26,14 +26,14 @@ v8.1: pestaña Publicar (autorizadas / sin autorizar / sin aprobar / historial c
 Studio muestra la propuesta de Muse y un resumen antes de autorizar; tarjetas de Agenda muestran estado de autorización;
 ELVIN_DECISION_REQUIRED decidible cuando capabilities.elvin_decision_actionable es true (tarea 0011).
 """
-import base64, hashlib, hmac, html, inspect, json, re, time, uuid
+import base64, hashlib, hmac, html, inspect, io, json, re, time, uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v8.3"
+APP_VERSION = "v9.0"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -76,7 +76,7 @@ H_RAW = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.r
 H_JSON = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
 DEFAULTS = {"auth": False, "login_attempts": 0, "login_locked_until": 0.0,
-            "tab": "Studio", "sel_ver": None, "compare": False, "focus": False, "inspector": True,
+            "tab": "Revisar", "sel_ver": None, "compare": False, "focus": False, "inspector": True,
             "change_open": False, "inflight": {}, "local_decided": {}, "notice": None,
             "answered_q": None}
 for k, v in DEFAULTS.items():
@@ -98,6 +98,9 @@ html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--te
 .kv-job{color:var(--muted);font-size:.74rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kv-live{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:.82rem;white-space:nowrap}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);flex:none}.dot.off{background:#4a5062;box-shadow:none}
+/* no fade while Streamlit reruns: content stays crisp and clickable */
+[data-stale="true"],[data-stale="true"] *{opacity:1!important;transition:none!important}
+[data-testid="stStatusWidget"]{display:none!important}
 /* buttons */
 [data-testid="stButton"] button,[data-testid="stFormSubmitButton"] button{border-radius:10px;min-height:36px;font-weight:600}
 button[kind="secondary"]{border:1px solid var(--line)!important;background:#11131b!important;color:var(--text)!important}
@@ -308,6 +311,7 @@ def gh_dir(path):
     return {n: dict(e) for n, e in idx["dirs"].get(str(path), {}).items()}
 
 def _clear_all_listings():
+    _MEMO.clear() if "_MEMO" in globals() else None
     for f in (gh_index, _gh_fetch_legacy, _gh_subdirs_legacy, _gh_dir_legacy):
         f.clear()
 gh_fetch.clear = _clear_all_listings
@@ -329,6 +333,24 @@ def gh_blob(path, sha):
 def gh_small_blob(path, sha):
     """Small immutable JSON files keyed by git sha (verdict/meta/decision/inbox)."""
     return _blob(path)
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=800)
+def gh_thumb(path, sha, width=640):
+    """Small JPEG preview (~60-100 KB) of a big PNG, cached by git sha. Raises on failure (never cached)."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(_blob(path))).convert("RGB")
+    im.thumbnail((width, width * 2))
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=82, optimize=True)
+    return out.getvalue()
+
+def thumb(info):
+    if not info or not info.get("sha"):
+        return None
+    try:
+        return gh_thumb(info["path"], info["sha"])
+    except Exception:
+        return None
 
 def blob(info, *, small=True):
     if not info or not info.get("sha"):
@@ -552,6 +574,9 @@ def _job_waiting(j):
     return last.get("veredicto_efectivo") in actionable_verdicts() and not last.get("decidido")
 
 jobs = sorted(jobs, key=_job_sort_key)
+ALL_JOBS = list(jobs)
+ARCHIVED = {j["job_id"] for j in jobs if as_dict(gh_json(f"jobs/{j['job_id']}/archived.json", {})).get("archived") is True}
+jobs = [j for j in jobs if j["job_id"] not in ARCHIVED] or jobs   # never end up with an empty dashboard
 job_ids = [j["job_id"] for j in jobs]
 
 if st.session_state.get("jid") not in job_ids:
@@ -619,9 +644,9 @@ def asset_info(vn, job_id=None):
             return typ, f
     return None, None
 
-def show_asset(vn, job_id=None):
+def show_asset(vn, job_id=None, preview=False):
     typ, info = asset_info(vn, job_id)
-    data = blob(info, small=False) if info else None
+    data = (thumb(info) if preview and typ == "image" else None) or (blob(info, small=False) if info else None)
     if typ and data is None:
         st.warning("No se pudo descargar el asset. Reintentando en el próximo refresco.")
     elif typ == "image":
@@ -883,31 +908,7 @@ st.markdown(
     f"<div class='kv-live'><span class='dot{'' if LIVE else ' off'}'></span><b style='color:white'>{esc(LIVE_LBL)}</b>"
     f"<span class='desktop-only'>· QA ${num(budget.get('monthly_used_usd')):.2f}</span></div></div>",
     unsafe_allow_html=True)
-with st.container(key="kv_nav"):
-    nav = st.columns([.72, .72, .8, .72, .72, 3.9, .6])
-    _n_review = len(pending_reviews())
-    for i, name in enumerate(("Studio", "Agenda", "Publicaciones", "Queue", "Model")):
-        label = f"Agenda {_n_review}" if name == "Agenda" and _n_review else ("Publicar" if name == "Publicaciones" else name)
-        if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
-            st.session_state.tab = name
-            st.session_state.compare = False
-            st.session_state.focus = False
-            st.rerun()
-    chosen = nav[5].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
-    if nav[6].button("Salir", key="logout", width="stretch"):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.session_state["cookie_clear"] = True
-        st.rerun()
-if chosen != jid:
-    # In-flight decisions are kept (keyed by job|version) so switching jobs never re-enables decided controls.
-    st.session_state.jid = chosen
-    st.session_state.sel_ver = None
-    st.session_state.compare = False
-    st.session_state.focus = False
-    st.session_state.change_open = False
-    st.session_state.notice = None
-    st.rerun()
+NAV_SLOT = st.container(key="kv_nav")   # filled by render_nav() once every renderer is defined
 
 
 # ───────────────────────── sync health (real bus data) ─────────────────────────
@@ -1333,18 +1334,19 @@ def publish_pending(vn, *, fresh=False, job_id=None):
 def _to_utc_iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def send_publish_authorization(targets, platform, operation, caption, scheduled_local):
+def send_publish_authorization(targets, platform, operation, caption, scheduled_local, job_id=None, vn=None):
     """Fresh checks against the bus, then a create-only authorize_publish in the inbox."""
-    fresh_files = _dir(f"jobs/{jid}/versions/{sel}")
+    _J, _V = job_id or jid, vn or sel
+    fresh_files = _dir(f"jobs/{_J}/versions/{_V}")
     if fresh_files is None:
         st.error("No se pudo verificar la versión en GitHub. Reintenta.")
         return
-    appr = as_dict(parse_json(_fetch(f"jobs/{jid}/versions/{sel}/decision_elvin.json")[1], {}))
+    appr = as_dict(parse_json(_fetch(f"jobs/{_J}/versions/{_V}/decision_elvin.json")[1], {}))
     if appr.get("decision") != "approve_final":
         st.error("Esta versión no tiene approve_final: primero aprueba el contenido.")
         return
     fresh_asset = next((fresh_files.get(f"asset.{e}") for e in ("mp4", "png", "jpg", "jpeg") if fresh_files.get(f"asset.{e}")), None)
-    _, shown = asset_info(sel)
+    _, shown = asset_info(_V, _J)
     if not fresh_asset or not shown or shown.get("sha") != fresh_asset.get("sha"):
         clear_bus_cache()
         st.warning("El asset cambió o no está sincronizado. Revísalo de nuevo antes de autorizar.")
@@ -1359,7 +1361,7 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
         st.error("El asset actual no es el que aprobaste. No se puede autorizar.")
         return
     account = targets["platforms"][platform]["account"]
-    pend, ok = publish_pending(sel, fresh=True)
+    pend, ok = publish_pending(_V, fresh=True, job_id=_J)
     if not ok:
         st.error("No se pudo verificar el inbox en GitHub. Reintenta.")
         return
@@ -1367,7 +1369,7 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
         if d.get("action") == "authorize_publish" and d.get("platform") == platform and d.get("operation") == operation:
             st.info("Ya hay una autorización enviada para ese destino · esperando al backend.")
             return
-    for r in publish_records(sel):
+    for r in publish_records(_V, _J):
         if r.get("status") in PUB_ACTIVE and r.get("platform") == platform and r.get("operation") == operation:
             st.warning("Ya existe una autorización activa para ese destino. Revócala antes de reprogramar.")
             return
@@ -1381,12 +1383,12 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
     expires_iso = _to_utc_iso(datetime.fromtimestamp(base_dt.timestamp() + ttl_h * 3600, timezone.utc))
     ns = uuid.UUID(targets["ns_publish"])
     cap_sha = hashlib.sha256(caption.encode("utf-8")).hexdigest()
-    did = str(uuid.uuid5(ns, f"{jid}|{sel}|{asset_sha}|{platform}|{account}|{operation}|{sched_iso}|{cap_sha}"))
-    obj = {"schema": "publish/v1", "decision_id": did, "action": "authorize_publish", "job_id": jid, "version": sel,
+    did = str(uuid.uuid5(ns, f"{_J}|{_V}|{asset_sha}|{platform}|{account}|{operation}|{sched_iso}|{cap_sha}"))
+    obj = {"schema": "publish/v1", "decision_id": did, "action": "authorize_publish", "job_id": _J, "version": _V,
            "timestamp": now_iso(), "note": "", "asset_file": fresh_asset["path"].rsplit("/", 1)[-1],
            "asset_sha": asset_sha, "asset_git_sha": fresh_asset["sha"], "platform": platform, "account": account,
            "operation": operation, "caption": caption, "scheduled_at": sched_iso, "expires_at": expires_iso}
-    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"authorize_publish {jid} {sel} {platform}/{operation}", create_only=True)
+    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"authorize_publish {_J} {_V} {platform}/{operation}", create_only=True)
     if ok or d.startswith("HTTP 422"):
         set_notice("Autorización de publicación enviada · esperando confirmación del backend.", "success")
         gh_dir.clear(); gh_tree.clear()
@@ -1609,7 +1611,7 @@ def agenda_index():
     # pieces Muse already planned but not yet generated are not in snapshot.json: read them from jobs/
     known = {j["job_id"] for j in jobs}
     for name in gh_subdirs("jobs"):
-        if name in known:
+        if name in known or name in ARCHIVED:
             continue
         plan = job_plan(name)
         if plan:
@@ -1659,7 +1661,7 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
         st.markdown(f"<div class='ins-head'><b>{esc(title)} · {esc(vn)}</b>{badge_html(vn, job_id)}</div>", unsafe_allow_html=True)
         if where:
             st.caption(where)
-        show_asset(vn, job_id)
+        show_asset(vn, job_id, preview=True)
         _prop_cap = str(vjson(vn, "publish_proposal.json", job_id).get("caption") or "").strip()
         render_caption_line(plan.get("operation"), _prop_cap or plan.get("caption_draft"), draft=not _prop_cap)
         st.caption(_qc_line(vn, job_id))
@@ -1720,13 +1722,18 @@ def _pub_summary(job_id, vn, plan):
     cap_lbl = (cap[:90] + ("…" if len(cap) > 90 else "")) if cap else ("sin caption (Story)" if op == "story" else "sin caption propuesto")
     return OP_LABELS.get(op, op or "formato sin definir"), when_lbl, cap_lbl, bool(prop)
 
+_MEMO = {}   # per-run memo (the script re-executes on every interaction, so this resets itself)
+
 def needs_elvin():
     """(to_review, to_authorize, approved_unplanned).
     to_review: READY, undecided, not superseded. to_authorize: approved + planned (plan.json or Muse proposal),
     publishing enabled, never authorized/published. approved_unplanned: approved without any publishing plan."""
+    if "needs" in _MEMO:
+        return _MEMO["needs"]
     enabled, _, _ = publish_caps()
     review, authorize, unplanned = [], [], []
     pend = set(pending_reviews())
+    sent = {k for k, ds in _inbox_pub_pending().items() if any(d.get("action") == "authorize_publish" for d in ds)}
     for j in jobs:
         jid_ = j["job_id"]
         plan = job_plan(jid_)
@@ -1736,14 +1743,15 @@ def needs_elvin():
             if (jid_, vn) in pend:
                 review.append((jid_, plan, vn))
             elif enabled and not published and decision_action(vn, jid_) == "approve_final" and not inflight_for(vn, jid_):
-                if any(r.get("status") in PUB_ACTIVE | {"executed"} for r in publish_records(vn, jid_)):
+                if (jid_, vn) in sent or any(r.get("status") in PUB_ACTIVE | {"executed"} for r in publish_records(vn, jid_)):
                     continue
                 if plan or vjson(vn, "publish_proposal.json", jid_):
                     authorize.append((jid_, plan, vn))
                 else:
                     unplanned.append((jid_, plan, vn))
     key = lambda it: (str(it[1].get("planned_for") or "9999"), str(it[1].get("slot") or "99:99"), it[0])
-    return sorted(review, key=key), sorted(authorize, key=key), unplanned
+    _MEMO["needs"] = (sorted(review, key=key), sorted(authorize, key=key), unplanned)
+    return _MEMO["needs"]
 
 def _go_studio(j, vn):
     st.session_state.jid = j
@@ -1754,24 +1762,55 @@ def _go_studio(j, vn):
     st.rerun()
 
 def render_auth_card(parent, j, p, vn, kp="na"):
-    """Approved piece waiting for publish authorization: proposed format, date/time (PT) and caption."""
-    fmt, when, cap, has_prop = _pub_summary(j, vn, p)
+    """Approved piece waiting for publish authorization, authorizable right here:
+    format, day and time (PT) come prefilled from Muse's proposal (else the plan)."""
+    enabled, _, targets = publish_caps()
+    prop = vjson(vn, "publish_proposal.json", j)
+    plats = list((targets.get("platforms") or {}).keys())
+    platform = next((x for x in (prop.get("platform"), p.get("platform")) if x in plats), plats[0] if plats else None)
+    ops = (targets.get("platforms") or {}).get(platform, {}).get("operations", []) if platform else []
+    op0 = next((x for x in (prop.get("operation"), p.get("operation")) if x in ops), None)
+    when0 = _proposal_when(prop, p)
+    cap0 = str(prop.get("caption") or p.get("caption_draft") or "").strip()
+    k = f"{kp}_{j}_{vn}"
     with parent.container(border=True, key=f"{kp}_auth_{j}_{vn}"):
-        c1, c2 = st.columns([1, 2.6])
+        c1, c2 = st.columns([1, 2.4])
         with c1:
             typ, info = asset_info(vn, j)
-            data = blob(info, small=False) if info and typ == "image" else None
+            data = thumb(info) if info and typ == "image" else None
             if data is not None:
                 st.image(data, width="stretch")
             else:
                 st.caption("video" if typ == "video" else "sin vista previa")
         with c2:
             st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b>"
-                        f"<span class='badge amber'>Sin autorizar</span></div>"
-                        f"<div class='find'><b>{esc(fmt)}</b> · {esc(when)} PT<br>{esc(cap)}</div>", unsafe_allow_html=True)
-            if not has_prop:
-                st.caption("Muse aún no propuso caption: puedes escribirlo tú o esperar su propuesta.")
-            if st.button("Revisar y autorizar", key=f"{kp}_pub_{j}_{vn}", type="primary", width="stretch"):
+                        f"<span class='badge amber'>Falta autorizar</span></div>", unsafe_allow_html=True)
+            if not (prop or p):
+                st.caption("Sin plan ni propuesta de Muse: elige formato y hora.")
+            op = st.selectbox("Formato", ops, index=ops.index(op0) if op0 in ops else None, placeholder="Elige el formato",
+                              format_func=lambda o: OP_LABELS.get(o, o), key=f"{k}_op")
+            mode = st.radio("Cuándo", ("Programar", "Ahora"), index=0 if when0 else None, horizontal=True, key=f"{k}_mode")
+            sched = None
+            if mode == "Programar":
+                d1, d2 = st.columns(2)
+                dflt = when0 or (datetime.now(LOCAL_TZ) + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+                day = d1.date_input("Día", value=dflt.date(), key=f"{k}_day", format="DD/MM/YYYY")
+                hour = d2.time_input("Hora (PT)", value=dflt.time().replace(second=0, microsecond=0, tzinfo=None), key=f"{k}_time")
+                sched = datetime.combine(day, hour).replace(tzinfo=LOCAL_TZ)
+            if op != "story":
+                cap = st.text_area("Caption (incluye hashtags)", value=cap0, key=f"{k}_cap", height=110)
+            else:
+                cap = ""
+                st.caption("Story: se publica sin caption.")
+            ready = bool(enabled and op and platform and (mode == "Ahora" or (mode == "Programar" and sched)))
+            when_lbl = _fmt_es(sched) if sched else "ahora mismo"
+            label = f"Autorizar · {OP_LABELS.get(op, op)} · {when_lbl}" if ready else "Elige formato y cuándo"
+            if st.button(label, key=f"{k}_go", type="primary", width="stretch", disabled=not ready):
+                if op != "story" and not cap.strip() and op not in as_list(targets.get("caption_optional_operations")):
+                    st.error("Escribe el caption.")
+                else:
+                    send_publish_authorization(targets, platform, op, cap, sched, job_id=j, vn=vn)
+            if st.button("Ver en Studio", key=f"{k}_studio", width="stretch"):
                 _go_studio(j, vn)
 
 def render_needs_elvin():
@@ -1796,6 +1835,13 @@ def render_needs_elvin():
             _auth_grid = st.container(key="ag_auth_grid")
             for j, p, vn in authorize:
                 render_auth_card(_auth_grid, j, p, vn, kp="na")
+    _sent = [(k, d) for k, ds in _inbox_pub_pending().items() for d in ds if d.get("action") == "authorize_publish"]
+    if _sent:
+        st.markdown(f"<div class='pipe-title'>Enviadas · esperando confirmación del backend · {len(_sent)}</div>", unsafe_allow_html=True)
+        for (j_, vn_), d in _sent:
+            st.markdown(f"<div class='find'><b>{esc(job_plan(j_).get('title') or j_)} · {esc(vn_)}</b> · "
+                        f"{esc(OP_LABELS.get(d.get('operation'), d.get('operation')))} · {esc(_fmt_es_iso(d.get('scheduled_at')))}</div>",
+                        unsafe_allow_html=True)
     if unplanned:
         with st.expander(f"Aprobadas sin plan de publicación · {len(unplanned)}"):
             st.caption("No tienen fecha ni formato. Muse debe planificarlas o marcarlas como ya publicadas; "
@@ -1839,7 +1885,7 @@ def render_pub_row_card(j, p, vn, r, waiting, kp="pb"):
             c1, c2 = st.columns([1, 2.6])
             with c1:
                 typ, info = asset_info(vn, j)
-                data = blob(info, small=False) if info and typ == "image" else None
+                data = thumb(info) if info and typ == "image" else None
                 if data is not None:
                     st.image(data, width="stretch")
                 else:
@@ -1916,11 +1962,12 @@ def render_publicaciones():
             for j, p, vn, r in history:
                 render_pub_row_card(j, p, vn, r, [], kp="pbh")
 
+def render_revisar():
+    render_notice()
+    render_needs_elvin()
+
 def render_agenda():
-    left, right = st.columns([1, 1.6], gap="medium")
-    with left:
-        render_needs_elvin()
-    with right:
+    if True:
         by_day, unplanned = agenda_index()
         today = today_local()
         if "ag_day" not in st.session_state:
@@ -1969,6 +2016,115 @@ def render_agenda():
                 st.caption("Estos jobs no tienen plan.json; Muse debe asignarles fecha para que aparezcan en un día.")
                 st.write(", ".join(unplanned))
 
+
+def render_queue():
+    st.caption(f"{jid} · {LIVE_LBL} · actualizado {human_age(AGE)}")
+    events = gh_json(f"jobs/{jid}/events.json", {})
+    lines = as_list(events.get("lines")) if isinstance(events, dict) else []
+    if lines:
+        st.code("\n".join(str(x) for x in lines[-80:]), language=None, wrap_lines=True)
+    else:
+        rows = []
+        for v in versions:
+            m = meta(v["version"])
+            rows.append({"version": v["version"], "status": status_badge(v["version"])[0],
+                         "registered": f"hace {human_age(hours_since(m.get('registered')))}" if m.get("registered") else "—", "model": as_dict(m.get("params")).get("model")})
+        st.dataframe(rows, width="stretch", hide_index=True)
+
+def render_model():
+    metrics = as_dict(gh_json("learning/metrics.json", {}))
+    rules_l = as_list(gh_json("learning/rules.json", []))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Muse ↔ QA", f"{num(metrics.get('acuerdo_pct')):g}%")
+    c2.metric("QA cost", f"${num(metrics.get('costo_supervisor_total_usd')):.4f}")
+    c3.metric("Elvin caught", int(num(metrics.get("human_caught_miss"))))
+    fp = num(metrics.get("falsos_positivos_muse")) + num(metrics.get("falsos_positivos_supervisor"))
+    c4.metric("False positives", int(fp))
+    st.caption(f"Phase: {metrics.get('fase', '—')} · Reviews: {metrics.get('revisiones_totales', 0)} · Learned rules: {metrics.get('reglas_aprendidas', 0)}")
+    active = [r for r in rules_l if isinstance(r, dict) and r.get("activa")]
+    if not active:
+        st.caption("Sin reglas activas sincronizadas.")
+    for r in active:
+        st.markdown(f"**{r.get('id', '—')}** — {r.get('regla', '')}")
+
+def archive_job(job_id, flag):
+    obj = {"schema": "archive/v1", "archived": bool(flag), "by": "elvin", "via": "dashboard", "reason": "", "at": now_iso()}
+    ok, d = gh_put_json(f"jobs/{job_id}/archived.json", obj, f"{'archive' if flag else 'restore'} {job_id}")
+    if ok:
+        clear_bus_cache()
+        set_notice(f"{job_id} {'archivado' if flag else 'restaurado'}.", "success")
+        st.rerun()
+    else:
+        st.error(f"No se pudo guardar: {d}")
+
+def render_sistema():
+    render_notice()
+    st.markdown("<div class='pipe-title'>Backend y Muse</div>", unsafe_allow_html=True)
+    dh = as_dict(gh_json("progress/daemon_health.json", {}))
+    age = (time.time() - _parse_ts_or(dh.get("cycle_ended"), 0)) if dh.get("cycle_ended") else None
+    rows = [f"<div class='find'><b>Daemon</b> · " + (f"último ciclo hace {esc(human_age(age / 3600))}" + (" · <span class='bad'>detenido</span>" if age > 240 else " · <span class='ok'>activo</span>") if age is not None else "sin datos") + "</div>",
+            f"<div class='find'><b>Decisiones sin confirmar</b> · {int(num(dh.get('inbox_pending')))}</div>",
+            f"<div class='find'><b>Muse</b> · {esc(ms.get('status') or '—')} · {esc(str(ms.get('current_task') or ''))[:90]}</div>",
+            f"<div class='find'><b>Presupuesto supervisor</b> · ${num(budget.get('monthly_used_usd')):.2f} de ${num(budget.get('monthly_cap_usd'), 5):.2f} este mes</div>"]
+    st.markdown("".join(rows), unsafe_allow_html=True)
+    tdir = gh_dir("tasks/status") or {}
+    tasks = [as_dict(parse_json(blob(i), {})) for n, i in tdir.items() if n.endswith(".json")]
+    tasks = sorted([t for t in tasks if t.get("task_id")], key=lambda t: str(t.get("updated") or ""), reverse=True)[:8]
+    if tasks:
+        st.markdown("<div class='pipe-title'>Tareas de Muse (últimas)</div>", unsafe_allow_html=True)
+        tone = {"done": "green", "blocked": "red", "in_progress": "violet", "received": "violet"}
+        st.markdown("".join(f"<div class='find'><span class='badge {tone.get(t.get('status'), '')}'>{esc(t.get('status'))}</span> "
+                            f"<b>{esc(t.get('task_id'))}</b><br><span class='small'>{esc(str(t.get('step') or t.get('blocked_reason') or ''))[:160]}</span></div>"
+                            for t in tasks), unsafe_allow_html=True)
+    st.markdown("<div class='pipe-title'>Jobs viejos y archivados</div>", unsafe_allow_html=True)
+    loose = [j["job_id"] for j in jobs if not job_plan(j["job_id"]) and j["job_id"] != "—"]
+    if not loose and not ARCHIVED:
+        st.caption("No hay jobs fuera de agenda ni archivados.")
+    for j in loose:
+        c1, c2 = st.container(key=f"sys_loose_{j}").columns([3, 1.2])
+        c1.markdown(f"<div class='find'><b>{esc(j)}</b> · sin plan · {len(job_versions(j))} versión(es)</div>", unsafe_allow_html=True)
+        if c2.button("Archivar", key=f"sys_arch_{j}", width="stretch"):
+            archive_job(j, True)
+    for j in sorted(ARCHIVED):
+        c1, c2 = st.container(key=f"sys_arch_row_{j}").columns([3, 1.2])
+        c1.markdown(f"<div class='find'><b>{esc(j)}</b> · archivado</div>", unsafe_allow_html=True)
+        if c2.button("Restaurar", key=f"sys_rest_{j}", width="stretch"):
+            archive_job(j, False)
+    with st.expander(f"Cola del job · {jid}"):
+        render_queue()
+    with st.expander("Modelo y reglas aprendidas"):
+        render_model()
+
+def render_nav():
+    with NAV_SLOT:
+        nav = st.columns([.8, .72, .8, .72, .8, 3.5, .6])
+        _nr, _na, _ = needs_elvin()
+        _n_review = len(_nr) + len(_na)
+        for i, name in enumerate(("Revisar", "Agenda", "Publicaciones", "Studio", "Sistema")):
+            label = f"Revisar {_n_review}" if name == "Revisar" and _n_review else ("Publicar" if name == "Publicaciones" else name)
+            if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
+                st.session_state.tab = name
+                st.session_state.compare = False
+                st.session_state.focus = False
+                st.rerun()
+        chosen = (nav[5].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
+                  if st.session_state.tab == "Studio" else jid)
+        if nav[6].button("Salir", key="logout", width="stretch"):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.session_state["cookie_clear"] = True
+            st.rerun()
+    if chosen != jid:
+        # In-flight decisions are kept (keyed by job|version) so switching jobs never re-enables decided controls.
+        st.session_state.jid = chosen
+        st.session_state.sel_ver = None
+        st.session_state.compare = False
+        st.session_state.focus = False
+        st.session_state.change_open = False
+        st.session_state.notice = None
+        st.rerun()
+
+render_nav()
 
 # ───────────────────────── tabs ─────────────────────────
 TAB = st.session_state.tab
@@ -2056,38 +2212,16 @@ elif TAB == "Agenda":
 elif TAB == "Publicaciones":
     render_publicaciones()
 
+elif TAB == "Revisar":
+    render_revisar()
+
 elif TAB == "Queue":
-    st.subheader("Queue")
-    st.caption(f"{jid} · {LIVE_LBL} · actualizado {human_age(AGE)}")
-    render_notice()
-    events = gh_json(f"jobs/{jid}/events.json", {})
-    lines = as_list(events.get("lines")) if isinstance(events, dict) else []
-    if lines:
-        st.code("\n".join(str(x) for x in lines[-80:]), language=None, wrap_lines=True)
-    else:
-        rows = []
-        for v in versions:
-            m = meta(v["version"])
-            rows.append({"version": v["version"], "status": status_badge(v["version"])[0],
-                         "registered": f"hace {human_age(hours_since(m.get('registered')))}" if m.get("registered") else "—", "model": as_dict(m.get("params")).get("model")})
-        st.dataframe(rows, width="stretch", hide_index=True)
+    render_queue()
 
 elif TAB == "Model":
-    metrics = as_dict(gh_json("learning/metrics.json", {}))
-    rules_l = as_list(gh_json("learning/rules.json", []))
-    st.subheader("Model / Analytics")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Muse ↔ QA", f"{num(metrics.get('acuerdo_pct')):g}%")
-    c2.metric("QA cost", f"${num(metrics.get('costo_supervisor_total_usd')):.4f}")
-    c3.metric("Elvin caught", int(num(metrics.get("human_caught_miss"))))
-    fp = num(metrics.get("falsos_positivos_muse")) + num(metrics.get("falsos_positivos_supervisor"))
-    c4.metric("False positives", int(fp))
-    st.caption(f"Phase: {metrics.get('fase', '—')} · Reviews: {metrics.get('revisiones_totales', 0)} · Learned rules: {metrics.get('reglas_aprendidas', 0)}")
-    with st.expander("Reglas aprendidas"):
-        active = [r for r in rules_l if isinstance(r, dict) and r.get("activa")]
-        if not active:
-            st.caption("Sin reglas activas sincronizadas.")
-        for r in active:
-            st.markdown(f"**{r.get('id', '—')}** — {r.get('regla', '')}")
+    render_model()
+
+elif TAB == "Sistema":
+    render_sistema()
 
 st.markdown(f"<div class='kv-foot'>Mission Control {APP_VERSION}</div>", unsafe_allow_html=True)
