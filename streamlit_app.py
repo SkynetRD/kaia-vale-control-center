@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v10.3"
+APP_VERSION = "v10.4"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 MUSE_DOWN_MIN = 15             # v10: Muse with an open task and no own heartbeat for this long = down
@@ -1384,7 +1384,7 @@ def publish_pending(vn, *, fresh=False, job_id=None):
 def _to_utc_iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def send_publish_authorization(targets, platform, operation, caption, scheduled_local, job_id=None, vn=None):
+def send_publish_authorization(targets, platform, operation, caption, scheduled_local, job_id=None, vn=None, supersedes=None):
     """Fresh checks against the bus, then a create-only authorize_publish in the inbox."""
     _J, _V = job_id or jid, vn or sel
     fresh_files = _dir(f"jobs/{_J}/versions/{_V}")
@@ -1420,7 +1420,8 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
             st.info("Ya hay una autorización enviada para ese destino · esperando al backend.")
             return
     for r in publish_records(_V, _J):
-        if r.get("status") in PUB_ACTIVE and r.get("platform") == platform and r.get("operation") == operation:
+        if (r.get("status") in PUB_ACTIVE and r.get("platform") == platform and r.get("operation") == operation
+                and r.get("authorization_id") != supersedes):
             st.warning("Ya existe una autorización activa para ese destino. Revócala antes de reprogramar.")
             return
     if len(caption or "") > CAPTION_MAX or len(re.findall(r"#\w+", caption or "")) > HASHTAGS_MAX:
@@ -1441,6 +1442,8 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
            "timestamp": now_iso(), "note": "", "asset_file": fresh_asset["path"].rsplit("/", 1)[-1],
            "asset_sha": asset_sha, "asset_git_sha": fresh_asset["sha"], "platform": platform, "account": account,
            "operation": operation, "caption": caption, "scheduled_at": sched_iso, "expires_at": expires_iso}
+    if supersedes:   # v10.4: reemplaza la autorización activa en un solo paso (el backend la revoca al aplicar esta)
+        obj["supersedes"] = supersedes
     ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"authorize_publish {_J} {_V} {platform}/{operation}", create_only=True)
     if ok or d.startswith("HTTP 422"):
         set_notice("Autorización de publicación enviada · esperando confirmación del backend.", "success")
@@ -1832,6 +1835,10 @@ def render_auth_card(parent, j, p, vn, kp="na"):
                     st.error("Escribe el caption.")
                 else:
                     send_publish_authorization(targets, platform, op, cap, sched, job_id=j, vn=vn)
+            _can_now = bool(enabled and op and platform and (op == "story" or cap.strip() or op in as_list(targets.get("caption_optional_operations"))))
+            if st.button("Publicar ahora", key=f"{k}_now", width="stretch", disabled=not _can_now,
+                         help="Autoriza y publica ya, sin esperar la hora del plan"):
+                send_publish_authorization(targets, platform, op, cap, None, job_id=j, vn=vn)
             if st.button("Ver en Studio", key=f"{k}_studio", width="stretch"):
                 _go_studio(j, vn)
 
@@ -1923,6 +1930,11 @@ def render_pub_row_card(j, p, vn, r, waiting, kp="pb"):
                 if any(d.get("action") == "revoke_publish" and d.get("target_authorization_id") == r["authorization_id"] for d in waiting):
                     st.caption("Revocación enviada · esperando al backend…")
                 elif r.get("status") == "authorized":
+                    if st.button("Publicar ahora", key=f"{kp}_now_{r['authorization_id']}", type="primary", width="stretch",
+                                 help="Reemplaza la hora programada por publicar ya"):
+                        _, _, _t = publish_caps()
+                        send_publish_authorization(_t, r.get("platform"), r.get("operation"), r.get("caption") or "", None,
+                                                   job_id=j, vn=vn, supersedes=r["authorization_id"])
                     if st.button("Revocar autorización", key=f"{kp}_rv_{r['authorization_id']}", width="stretch"):
                         send_publish_revoke(r["authorization_id"], job_id=j, vn=vn)
             if st.button("Abrir en Studio", key=f"{kp}_st_{r['authorization_id']}", width="stretch"):
