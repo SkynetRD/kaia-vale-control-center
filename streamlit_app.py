@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v10.1"
+APP_VERSION = "v10.2"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 MUSE_DOWN_MIN = 15             # v10: Muse with an open task and no own heartbeat for this long = down
@@ -2158,7 +2158,11 @@ def render_hoy():
     st.markdown("<div class='chips'>" + "".join(f"<span class='chip {c}'><i></i>{esc(x)}</span>" for c, x in (muse, dae, dec)) + "</div>",
                 unsafe_allow_html=True)
 
-    changes = sorted(((j["job_id"], j.get("updated")) for j in jobs if j.get("state") == "CHANGES_REQUESTED"),
+    def _still_waiting(j):
+        # job.state can lag behind (Muse reconciles it later): waiting only if the LATEST version is still the one with changes requested
+        vs = job_versions(j["job_id"])
+        return bool(vs) and vs[-1].get("veredicto_efectivo") == "CHANGES_REQUESTED"
+    changes = sorted(((j["job_id"], j.get("updated")) for j in jobs if j.get("state") == "CHANGES_REQUESTED" and _still_waiting(j)),
                      key=lambda x: str(x[1] or ""))
     if MUSE["down"] and st.button("Pedir a Muse que retome", key="hoy_resume", type="primary", width="stretch"):
         send_resume_task([j for j, _ in changes])
