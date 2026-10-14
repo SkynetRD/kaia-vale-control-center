@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v10.2"
+APP_VERSION = "v10.3"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 MUSE_DOWN_MIN = 15             # v10: Muse with an open task and no own heartbeat for this long = down
@@ -49,6 +49,11 @@ ACK_TIMEOUT_S = 180            # warn if the backend has not ACKed after 3 min
 NOTICE_TTL_S = 180             # how long decision notices stay visible
 MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_S = 60
+GLOBAL_LOGIN_FAILS = 12       # fallos totales (todas las sesiones) que bloquean el login 5 min
+GLOBAL_LOCKOUT_S = 300
+CAPTION_MAX = 2200            # Instagram Graph API (IG User Media): caption <= 2200 caracteres, <= 30 hashtags
+HASHTAGS_MAX = 30
+NOTE_MAX = 2000
 RECENT_ACK_WINDOW_H = 6       # window for the accepted-ACK-not-yet-synced check
 RECENT_ACK_MAX_COMMITS = 20
 ACK_OK = {"accepted"}
@@ -64,7 +69,7 @@ VERDICT_LABELS = {"READY_FOR_ELVIN_REVIEW": ("Ready for review", "violet"), "COR
                   "READY_PENDING_PUSH": ("Uploading to bus", "violet")}
 DECISION_ICONS = {"approve_final": "✓", "reject": "✕", "request_changes": "↻"}
 
-st.set_page_config(page_title="Kaia Vale · Mission Control", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Kaia Vale · Mission Control", page_icon="🌙", layout="wide", initial_sidebar_state="collapsed")
 
 try:
     PASSWORD = str(st.secrets["DASHBOARD_PASSWORD"])
@@ -488,6 +493,11 @@ def _run_html(code):
     else:
         components.html(code, height=0)
 
+@st.cache_resource
+def _login_guard():
+    """Contador de fallos compartido por TODAS las sesiones: abrir otra pestaña no reinicia el límite."""
+    return {"fails": 0, "locked_until": 0.0}
+
 if not st.session_state.auth and not st.session_state.get("cookie_clear"):
     try:
         if _auth_token_ok(st.context.cookies.get(AUTH_COOKIE)):
@@ -501,17 +511,24 @@ if not st.session_state.auth:
         pw = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
         go = st.form_submit_button("Entrar", width="stretch")
     if go:
-        wait = st.session_state.login_locked_until - time.time()
+        _g = _login_guard()
+        wait = max(st.session_state.login_locked_until, _g["locked_until"]) - time.time()
         if wait > 0:
             st.error(f"Demasiados intentos. Espera {int(wait) + 1} s.")
         elif hmac.compare_digest(pw.encode("utf-8"), PASSWORD.encode("utf-8")):
             st.session_state.auth = True
             st.session_state.login_attempts = 0
+            _g["fails"] = 0
             st.session_state.cookie_to_set = _auth_token(int(time.time()) + AUTH_DAYS * 86400)
             st.rerun()
         else:
             st.session_state.login_attempts += 1
-            if st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
+            _g["fails"] += 1
+            if _g["fails"] >= GLOBAL_LOGIN_FAILS:
+                _g["fails"] = 0
+                _g["locked_until"] = time.time() + GLOBAL_LOCKOUT_S
+                st.error(f"Password incorrecto. Login bloqueado {GLOBAL_LOCKOUT_S // 60} min.")
+            elif st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
                 st.session_state.login_attempts = 0
                 st.session_state.login_locked_until = time.time() + LOGIN_LOCKOUT_S
                 st.error(f"Password incorrecto. Bloqueado {LOGIN_LOCKOUT_S} s.")
@@ -1314,7 +1331,7 @@ def render_decision_block():
                 send_decision("approve_final")
         if st.session_state.change_open:
             with st.form("changes_form"):
-                note = st.text_area("Cambios solicitados", placeholder="Describe exactamente qué debe corregirse…")
+                note = st.text_area("Cambios solicitados", placeholder="Describe exactamente qué debe corregirse…", max_chars=NOTE_MAX)
                 if st.form_submit_button("Enviar cambios", type="primary", width="stretch"):
                     if note.strip():
                         send_decision("request_changes", note)
@@ -1406,6 +1423,9 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
         if r.get("status") in PUB_ACTIVE and r.get("platform") == platform and r.get("operation") == operation:
             st.warning("Ya existe una autorización activa para ese destino. Revócala antes de reprogramar.")
             return
+    if len(caption or "") > CAPTION_MAX or len(re.findall(r"#\w+", caption or "")) > HASHTAGS_MAX:
+        st.error(f"Instagram admite como máximo {CAPTION_MAX} caracteres y {HASHTAGS_MAX} hashtags en el caption.")
+        return
     now = datetime.now(timezone.utc)
     sched_iso = _to_utc_iso(scheduled_local) if scheduled_local else None
     if scheduled_local and scheduled_local.astimezone(timezone.utc) < now:
@@ -1555,7 +1575,7 @@ def render_publish_block():
         _has_op = bool(proposal.get("operation") or _plan.get("operation"))
         operation = st.selectbox("Formato", ops, index=0 if _has_op else None, placeholder="Elige el formato",
                                  format_func=lambda o: OP_LABELS.get(o, o), key="pub_operation")
-        caption = st.text_area("Caption", key="pub_caption")
+        caption = st.text_area("Caption", key="pub_caption", max_chars=CAPTION_MAX)
         _has_when = bool(_proposal_when(proposal, _plan)) or "pub_when" in st.session_state
         when = st.radio("Cuándo", ("Ahora", "Programar"), index=None if not _has_when else 0, horizontal=True, key="pub_when")
         scheduled = None
@@ -1693,7 +1713,7 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
             if st.session_state.get(f"{kp}_chg_open_{k}"):
                 with st.form(f"{kp}_chg_form_{k}"):
                     note = st.text_area("Cambios", placeholder="Qué debe corregirse…", label_visibility="collapsed",
-                                        key=f"{kp}_chg_note_{k}")
+                                        key=f"{kp}_chg_note_{k}", max_chars=NOTE_MAX)
                     if st.form_submit_button("Enviar cambios", type="primary", width="stretch"):
                         if note.strip():
                             st.session_state[f"{kp}_chg_open_{k}"] = False
@@ -1800,7 +1820,7 @@ def render_auth_card(parent, j, p, vn, kp="na"):
                 hour = d2.time_input("Hora (PT)", value=dflt.time().replace(second=0, microsecond=0, tzinfo=None), key=f"{k}_time")
                 sched = datetime.combine(day, hour).replace(tzinfo=LOCAL_TZ)
             if op != "story":
-                cap = st.text_area("Caption (incluye hashtags)", value=cap0, key=f"{k}_cap", height=110)
+                cap = st.text_area("Caption (incluye hashtags)", value=cap0, key=f"{k}_cap", height=110, max_chars=CAPTION_MAX)
             else:
                 cap = ""
                 st.caption("Story: se publica sin caption.")
