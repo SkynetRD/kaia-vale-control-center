@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v9.0"
+APP_VERSION = "v9.1"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -1584,19 +1584,16 @@ def job_plan(job_id):
     return p
 
 def agenda_versions(job_id):
-    """Versions to show for a planned job: every candidate Elvin can act on or already acted on,
-    plus the latest one for context. Superseded fixes (CORREGIR/ESCALAR, not latest) are hidden."""
-    vs = job_versions(job_id)
-    if not vs:
+    """Versions to show for a planned job: the latest, the last one Elvin approved, any he can still
+    decide (same rule as Revisar: not superseded) and any with a decision in flight. The rest only in Studio."""
+    names = [v["version"] for v in job_versions(job_id)]
+    if not names:
         return []
-    latest = vs[-1]["version"]
-    out = []
-    for v in vs:
-        vn = v["version"]
-        if (vn == latest or v.get("veredicto_efectivo") in actionable_verdicts()
-                or decision_action(vn, job_id) or inflight_for(vn, job_id)):
-            out.append(vn)
-    return out
+    approved = [vn for vn in names if decision_action(vn, job_id) == "approve_final"]
+    keep = {names[-1], *approved[-1:]}
+    keep |= {vn for vn in names if inflight_for(vn, job_id)
+             or (is_reviewable(vn, job_id) and not is_superseded(vn, job_id))}
+    return [vn for vn in names if vn in keep]
 
 def agenda_index():
     """{date: [(job_id, plan)]} for all planned jobs, plus the list of unplanned jobs that have renders."""
@@ -1677,14 +1674,14 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
         if inflight_for(vn, job_id):
             st.markdown("<div class='review'><b>Decisión enviada</b> · esperando confirmación del backend.</div>", unsafe_allow_html=True)
         elif is_reviewable(vn, job_id):
-            c1, c2, c3 = st.columns(3)
+            if st.button("✓ Aprobar", key=f"{kp}_approve_{k}", type="primary", width="stretch"):
+                send_decision("approve_final", job_id=job_id, vn=vn)
+            c1, c2 = st.columns(2)
             if c1.button("✕ Rechazar", key=f"{kp}_reject_{k}", width="stretch"):
                 send_decision("reject", job_id=job_id, vn=vn)
             if c2.button("↻ Cambios", key=f"{kp}_changes_{k}", width="stretch"):
                 st.session_state[f"{kp}_chg_open_{k}"] = not st.session_state.get(f"{kp}_chg_open_{k}", False)
                 st.rerun()
-            if c3.button("✓ Aprobar", key=f"{kp}_approve_{k}", type="primary", width="stretch"):
-                send_decision("approve_final", job_id=job_id, vn=vn)
             if st.session_state.get(f"{kp}_chg_open_{k}"):
                 with st.form(f"{kp}_chg_form_{k}"):
                     note = st.text_area("Cambios", placeholder="Qué debe corregirse…", label_visibility="collapsed",
