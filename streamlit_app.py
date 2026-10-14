@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v8.1"
+APP_VERSION = "v8.2"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -43,7 +43,7 @@ WATCH_PENDING_S = 5         # faster poll while a decision waits for its ACK
 MIN_RERUN_GAP_S = 30        # never rerun the whole app more often than this because of background changes
 AUTH_COOKIE = "kv_auth"
 AUTH_DAYS = 30
-ACK_TIMEOUT_S = 600            # warn if the backend has not ACKed after 10 min
+ACK_TIMEOUT_S = 180            # warn if the backend has not ACKed after 3 min
 NOTICE_TTL_S = 180             # how long decision notices stay visible
 MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_S = 60
@@ -924,6 +924,12 @@ else:
             f"la más antigua hace {esc(human_age(HEALTH['oldest_age_s'] / 3600))}{esc(dup)}: {esc(items)}. "
             f"Muse/sync daemon no está consumiendo el inbox; nada de esto está aplicado todavía.</div>",
             unsafe_allow_html=True)
+    _dh = as_dict(gh_json("progress/daemon_health.json", {}))
+    if _dh.get("cycle_ended"):
+        _age = time.time() - _parse_ts_or(_dh.get("cycle_ended"), time.time())
+        if _age > 240:
+            st.markdown(f"<div class='review red'><b>Backend apagado</b> · el daemon no completa un ciclo hace {esc(human_age(_age / 3600))}. "
+                        "Las autorizaciones y aprobaciones que envíes no se confirmarán hasta que se reinicie.</div>", unsafe_allow_html=True)
     hb = HEALTH["heartbeat_h"]
     if hb > HEARTBEAT_STALE_H:
         st.caption(f"Sin actividad registrada de Muse · último heartbeat hace {human_age(hb)}"
