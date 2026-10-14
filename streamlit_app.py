@@ -21,6 +21,10 @@ decision records only gain additive fields (asset_file, asset_sha = SHA-256 of t
   piece removes it from the queue and Studio jumps to the next one waiting for Elvin.
 - v7.0: Agenda tab — proposals by planned day (jobs/<job>/plan.json, plan/v1) with
   approve / reject / request changes per image; same decision protocol as Studio.
+
+v8.1: pestaña Publicar (autorizadas / sin autorizar / sin aprobar / historial con fecha, hora PT, formato y caption, y revocar);
+Studio muestra la propuesta de Muse y un resumen antes de autorizar; tarjetas de Agenda muestran estado de autorización;
+ELVIN_DECISION_REQUIRED decidible cuando capabilities.elvin_decision_actionable es true (tarea 0011).
 """
 import base64, hashlib, hmac, html, inspect, json, re, time, uuid
 from datetime import datetime, timedelta, timezone
@@ -29,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v8.0"
+APP_VERSION = "v8.1"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -52,7 +56,7 @@ DECISION_LABELS = {"approve_final": "Approved by Elvin", "reject": "Rejected by 
 DECISION_TONE = {"approve_final": "green", "reject": "red", "request_changes": "amber"}
 ACTION_NAMES = {"approve_final": "Approve", "reject": "Reject", "request_changes": "Request changes"}
 VERDICT_LABELS = {"READY_FOR_ELVIN_REVIEW": ("Ready for review", "violet"), "CORREGIR": ("Needs fixes", "amber"),
-                  "ESCALAR": ("Escalated", "red"), "APROBADO": ("QA approved", "green")}
+                  "ESCALAR": ("Escalated", "red"), "ELVIN_DECISION_REQUIRED": ("Needs your decision", "violet"), "APROBADO": ("QA approved", "green")}
 DECISION_ICONS = {"approve_final": "✓", "reject": "✕", "request_changes": "↻"}
 
 st.set_page_config(page_title="Kaia Vale · Mission Control", layout="wide", initial_sidebar_state="collapsed")
@@ -144,11 +148,12 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 .kv-foot{font-size:.66rem;color:#4a5062;text-align:right;margin-top:4px}
 .mobile-only{display:none}
 @media(min-width:761px){
-.st-key-ag_grid,.st-key-ag_review_grid,.st-key-ag_auth_grid{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:.9rem!important;align-items:start}
-.st-key-ag_grid>*,.st-key-ag_review_grid>*,.st-key-ag_auth_grid>*{min-width:0}
+.st-key-ag_grid,.st-key-ag_review_grid,.st-key-ag_auth_grid,.st-key-pb_grid_active,.st-key-pb_grid_auth{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:.9rem!important;align-items:start}
+.st-key-ag_grid>*,.st-key-ag_review_grid>*,.st-key-ag_auth_grid>*,.st-key-pb_grid_active>*,.st-key-pb_grid_auth>*{min-width:0}
 [class*="st-key-na_auth_"] [data-testid="stImage"] img{max-height:220px!important}
 }
 @media(max-width:760px){
+[class*="st-key-pba_"] [data-testid="stImage"] img,[class*="st-key-pb_auth_"] [data-testid="stImage"] img,[class*="st-key-na_auth_"] [data-testid="stImage"] img{max-height:240px!important;width:auto!important;margin:0 auto}
 .block-container,[data-testid="stMainBlockContainer"]{padding:.35rem .6rem 5rem!important}
 .desktop-only,.st-key-kv_pipe,.st-key-kv_insp,.st-key-tog_insp{display:none!important}
 .mobile-only{display:block}.pipe-mini.mobile-only{display:flex}div.mobile-only{padding-bottom:10px}
@@ -157,8 +162,9 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 /* nav: tabs + Salir in one row, job selector full width below */
 .st-key-kv_nav [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.4rem!important}
 .st-key-kv_nav [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
-.st-key-kv_nav [data-testid="stColumn"]:nth-child(5){order:6;flex:1 1 100%!important}
-.st-key-kv_nav button{min-height:34px!important;padding:0 6px!important}
+.st-key-kv_nav [data-testid="stColumn"]:nth-child(6){order:8;flex:1 1 100%!important}
+.st-key-kv_nav button{min-height:34px!important;padding:0 2px!important}
+.st-key-kv_nav button p{font-size:.72rem!important;white-space:nowrap!important}
 /* decision + tools rows never stack */
 .st-key-kv_decide [data-testid="stHorizontalBlock"],.st-key-kv_tools [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important}
 .st-key-kv_decide [data-testid="stColumn"],.st-key-kv_tools [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
@@ -343,6 +349,12 @@ def parse_json(b, default):
 def gh_json(path, default=None, *, fresh=False):
     _, b = _fetch(path) if fresh else gh_fetch(path)
     return parse_json(b, default)
+
+def actionable_verdicts():
+    """Verdicts on which Elvin can decide. ELVIN_DECISION_REQUIRED only when the backend declares it can apply it."""
+    caps = gh_json("protocol/capabilities.json", {})
+    caps = caps if isinstance(caps, dict) else {}
+    return {"READY_FOR_ELVIN_REVIEW"} | ({"ELVIN_DECISION_REQUIRED"} if caps.get("elvin_decision_actionable") is True else set())
 
 def as_dict(x):
     return x if isinstance(x, dict) else {}
@@ -537,7 +549,7 @@ def _job_waiting(j):
     if not vs:
         return False
     last = max(vs, key=lambda v: int(str(v["version"]).lstrip("vV") or -1) if str(v["version"]).lstrip("vV").isdigit() else -1)
-    return last.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not last.get("decidido")
+    return last.get("veredicto_efectivo") in actionable_verdicts() and not last.get("decidido")
 
 jobs = sorted(jobs, key=_job_sort_key)
 job_ids = [j["job_id"] for j in jobs]
@@ -777,7 +789,7 @@ def sync_health():
 for v in versions:
     vn = v["version"]
     k = vkey(vn)
-    if v.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW" and not is_decided(vn) and k not in st.session_state.inflight:
+    if v.get("veredicto_efectivo") in actionable_verdicts() and not is_decided(vn) and k not in st.session_state.inflight:
         rec, _ = inbox_decision_for(vn)
         if rec:
             st.session_state.inflight[k] = rec
@@ -802,7 +814,7 @@ def inflight_for(vn, job_id=None):
     return st.session_state.inflight.get(vkey(vn, job_id))
 
 def is_reviewable(vn, job_id=None):
-    return (vinfo(vn, job_id).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
+    return (vinfo(vn, job_id).get("veredicto_efectivo") in actionable_verdicts()
             and not is_decided(vn, job_id) and not inflight_for(vn, job_id))
 
 def is_superseded(vn, job_id=None):
@@ -811,7 +823,7 @@ def is_superseded(vn, job_id=None):
     if vn not in vs:
         return False
     for later in vs[vs.index(vn) + 1:]:
-        if decision_action(later, job_id) == "approve_final" or vinfo(later, job_id).get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW":
+        if decision_action(later, job_id) == "approve_final" or vinfo(later, job_id).get("veredicto_efectivo") in actionable_verdicts():
             return True
     return False
 
@@ -872,17 +884,17 @@ st.markdown(
     f"<span class='desktop-only'>· QA ${num(budget.get('monthly_used_usd')):.2f}</span></div></div>",
     unsafe_allow_html=True)
 with st.container(key="kv_nav"):
-    nav = st.columns([.72, .72, .72, .72, 4.6, .6])
+    nav = st.columns([.72, .72, .8, .72, .72, 3.9, .6])
     _n_review = len(pending_reviews())
-    for i, name in enumerate(("Studio", "Agenda", "Queue", "Model")):
-        label = f"Agenda {_n_review}" if name == "Agenda" and _n_review else name
+    for i, name in enumerate(("Studio", "Agenda", "Publicaciones", "Queue", "Model")):
+        label = f"Agenda {_n_review}" if name == "Agenda" and _n_review else ("Publicar" if name == "Publicaciones" else name)
         if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
             st.session_state.tab = name
             st.session_state.compare = False
             st.session_state.focus = False
             st.rerun()
-    chosen = nav[4].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
-    if nav[5].button("Salir", key="logout", width="stretch"):
+    chosen = nav[5].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
+    if nav[6].button("Salir", key="logout", width="stretch"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.session_state["cookie_clear"] = True
@@ -1050,7 +1062,7 @@ def stage_data():
     stages = [("Brief", has or s == "GENERATING"),
               ("Generate", has and not generating),
               ("Muse QC", bool(vd)),
-              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "READY_FOR_ELVIN_REVIEW", "APROBADO") or decision_action(cur) == "approve_final"),
+              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "ELVIN_DECISION_REQUIRED", "READY_FOR_ELVIN_REVIEW", "APROBADO") or decision_action(cur) == "approve_final"),
               ("Elvin", is_decided(cur)),
               ("Publish", published)]
     if published:
@@ -1265,7 +1277,8 @@ def render_decision_block():
         ve = vinfo(sel).get("veredicto_efectivo") or "sin veredicto"
         why = {"CORREGIR": "el supervisor pidió correcciones; Muse debe generar una versión corregida",
                "ESCALAR": "el supervisor escaló el caso; Muse debe resolverlo o explicarlo",
-               "READY_PENDING_PUSH": "la versión todavía no terminó de sincronizarse"}.get(ve, "la versión no está lista para tu revisión")
+               "READY_PENDING_PUSH": "la versión todavía no terminó de sincronizarse",
+               "ELVIN_DECISION_REQUIRED": "el supervisor dejó la decisión en tus manos, pero el backend de Muse aún no declaró que puede aplicarla (tarea 0011 pendiente)"}.get(ve, "la versión no está lista para tu revisión")
         st.markdown(f"<div class='review warn'><b>Sin decisión disponible</b> · {esc(sel)}: veredicto <b>{esc(ve)}</b> — {esc(why)}. "
                     "Los botones aparecen cuando el supervisor la deja en READY_FOR_ELVIN_REVIEW.</div>", unsafe_allow_html=True)
 
@@ -1294,8 +1307,9 @@ def publish_records(vn, job_id=None):
     recs = [as_dict(parse_json(blob(info), {})) for name, info in sorted(files.items()) if name.endswith(".json")]
     return [r for r in recs if r.get("authorization_id")]
 
-def publish_pending(vn, *, fresh=False):
-    """publish/v1 inbox messages for jid/vn without ACK. Returns (list, ok)."""
+def publish_pending(vn, *, fresh=False, job_id=None):
+    """publish/v1 inbox messages for job/vn without ACK. Returns (list, ok)."""
+    job_id = job_id or jid
     inbox = _tree("decisions/inbox") if fresh else gh_tree("decisions/inbox")
     acks = _tree("decisions/acks") if fresh else gh_tree("decisions/acks")
     if inbox is None or acks is None:
@@ -1303,7 +1317,7 @@ def publish_pending(vn, *, fresh=False):
     out = []
     for name in sorted(set(inbox) - set(acks)):
         d = as_dict(parse_json(blob(inbox[name]), {}))
-        if d.get("job_id") == jid and d.get("version") == vn and d.get("action") in ("authorize_publish", "revoke_publish"):
+        if d.get("job_id") == job_id and d.get("version") == vn and d.get("action") in ("authorize_publish", "revoke_publish"):
             out.append(d)
     return out, True
 
@@ -1371,8 +1385,10 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
     else:
         st.error(f"No se pudo enviar: {d}")
 
-def send_publish_revoke(auth_id, note=""):
-    pend, ok = publish_pending(sel, fresh=True)
+def send_publish_revoke(auth_id, note="", job_id=None, vn=None):
+    job_id = job_id or jid
+    vn = vn or sel
+    pend, ok = publish_pending(vn, fresh=True, job_id=job_id)
     if not ok:
         st.error("No se pudo verificar el inbox en GitHub. Reintenta.")
         return
@@ -1381,9 +1397,9 @@ def send_publish_revoke(auth_id, note=""):
         return
     _, _, targets = publish_caps()
     did = str(uuid.uuid5(uuid.UUID(targets["ns_publish"]), f"revoke|{auth_id}"))
-    obj = {"schema": "publish/v1", "decision_id": did, "action": "revoke_publish", "job_id": jid, "version": sel,
+    obj = {"schema": "publish/v1", "decision_id": did, "action": "revoke_publish", "job_id": job_id, "version": vn,
            "target_authorization_id": auth_id, "timestamp": now_iso(), "note": note}
-    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"revoke_publish {jid} {sel}", create_only=True)
+    ok, d = gh_put_json(f"decisions/inbox/{did}.json", obj, f"revoke_publish {job_id} {vn}", create_only=True)
     if ok or d.startswith("HTTP 422"):
         set_notice("Revocación enviada · esperando confirmación del backend.", "success")
         gh_dir.clear(); gh_tree.clear()
@@ -1397,6 +1413,17 @@ def _fmt_local(iso):
         return dt.astimezone(LOCAL_TZ).strftime("%d %b %H:%M") + (" PT" if LOCAL_TZ is not timezone.utc else " UTC")
     except Exception:
         return "inmediata"
+
+def _fmt_es(dt):
+    """'Mié 14 oct · 18:00 PT' for an aware datetime (converted to local)."""
+    dt = dt.astimezone(LOCAL_TZ)
+    return f"{day_label(dt.date())} · {dt.strftime('%H:%M')} {'PT' if LOCAL_TZ is not timezone.utc else 'UTC'}"
+
+def _fmt_es_iso(iso):
+    try:
+        return _fmt_es(datetime.fromisoformat(str(iso).replace("Z", "+00:00")))
+    except Exception:
+        return "inmediata (al autorizar)"
 
 def _proposal_when(proposal, plan):
     """Local datetime proposed for publishing (publish_proposal.scheduled_for, else plan date+slot); None if absent/past."""
@@ -1465,8 +1492,21 @@ def render_publish_block():
                 send_publish_revoke(r["authorization_id"])
     proposal = vjson(sel, "publish_proposal.json")
     _apply_publish_defaults(targets, proposal)
-    if proposal.get("caption"):
-        st.caption("Caption, formato y hora propuestos por Muse. Revísalos; puedes editarlos antes de autorizar.")
+    _plan = job_plan(jid)
+    _pop = proposal.get("operation") or _plan.get("operation")
+    _pwhen = proposal.get("scheduled_for") or (f"{_plan.get('planned_for')}T{_plan.get('slot')}" if _plan.get("planned_for") and _plan.get("slot") else "")
+    _pcap = str(proposal.get("caption") or _plan.get("caption_draft") or "").strip()
+    if _pop or _pwhen:
+        _src = "Propuesta de Muse" if proposal else "Plan de Muse"
+        try:
+            _dt = datetime.fromisoformat(str(_pwhen).replace("Z", "+00:00"))
+            _dt = _dt if _dt.tzinfo else _dt.replace(tzinfo=LOCAL_TZ)
+            _w = _fmt_es(_dt) + ("" if _dt > datetime.now(LOCAL_TZ) else " · ⚠ ya pasó: elige nueva hora")
+        except ValueError:
+            _w = "sin hora propuesta"
+        _c = esc(_pcap).replace(chr(10), "<br>") if _pcap else ("sin caption (la Story sale limpia)" if _pop == "story" else "sin caption propuesto")
+        st.markdown(f"<div class='review'><b>{_src}</b><br><b>Formato:</b> {esc(OP_LABELS.get(_pop, _pop or '—'))}<br>"
+                    f"<b>Cuándo:</b> {esc(_w)}<br><b>Caption:</b> {_c}</div>", unsafe_allow_html=True)
     with st.expander("Autorizar publicación", expanded=not any(r.get("status") in PUB_ACTIVE for r in recs)):
         plats = list(targets["platforms"].keys())
         platform = st.selectbox("Plataforma", plats, key="pub_platform")
@@ -1485,6 +1525,9 @@ def render_publish_block():
             day = c1.date_input("Día", key="pub_day")
             hour = c2.time_input("Hora (PT)" if LOCAL_TZ is not timezone.utc else "Hora (UTC)", key="pub_time")
             scheduled = datetime.combine(day, hour).replace(tzinfo=LOCAL_TZ)
+        _when_lbl = _fmt_es(scheduled) if scheduled else "ahora mismo"
+        st.markdown(f"<div class='find'><b>Vas a autorizar:</b> {esc(OP_LABELS.get(operation, operation))} en {esc(platform)} · "
+                    f"{esc(_when_lbl)} · {'con caption' if caption.strip() else 'sin caption'}</div>", unsafe_allow_html=True)
         confirm = st.checkbox(f"Confirmo publicar {sel} de {jid} en {platform} ({OP_LABELS.get(operation, operation)}), una sola vez.",
                               key="pub_confirm")
         if st.button("Autorizar publicación", key="pub_send", type="primary", width="stretch", disabled=not confirm):
@@ -1530,7 +1573,7 @@ def agenda_versions(job_id):
     out = []
     for v in vs:
         vn = v["version"]
-        if (vn == latest or v.get("veredicto_efectivo") == "READY_FOR_ELVIN_REVIEW"
+        if (vn == latest or v.get("veredicto_efectivo") in actionable_verdicts()
                 or decision_action(vn, job_id) or inflight_for(vn, job_id)):
             out.append(vn)
     return out
@@ -1602,6 +1645,14 @@ def render_agenda_card(job_id, plan, vn, kp="ag"):
         _prop_cap = str(vjson(vn, "publish_proposal.json", job_id).get("caption") or "").strip()
         render_caption_line(plan.get("operation"), _prop_cap or plan.get("caption_draft"), draft=not _prop_cap)
         st.caption(_qc_line(vn, job_id))
+        if decision_action(vn, job_id) == "approve_final":
+            _act = [r for r in publish_records(vn, job_id) if r.get("status") in PUB_ACTIVE]
+            if _act:
+                _r = _act[0]
+                st.markdown(f"<div class='find'><span class='badge violet'>Autorizada</span> {esc(OP_LABELS.get(_r.get('operation'), _r.get('operation')))} · "
+                            f"{esc(_fmt_es_iso(_r.get('scheduled_at')) if _r.get('scheduled_at') else 'inmediata')}</div>", unsafe_allow_html=True)
+            elif publish_caps()[0]:
+                st.markdown("<div class='find'><span class='badge amber'>Sin autorizar</span> falta autorizar su publicación (pestaña Publicar)</div>", unsafe_allow_html=True)
         k = f"{job_id}_{vn}"
         if inflight_for(vn, job_id):
             st.markdown("<div class='review'><b>Decisión enviada</b> · esperando confirmación del backend.</div>", unsafe_allow_html=True)
@@ -1684,6 +1735,27 @@ def _go_studio(j, vn):
     st.session_state.focus = False
     st.rerun()
 
+def render_auth_card(parent, j, p, vn, kp="na"):
+    """Approved piece waiting for publish authorization: proposed format, date/time (PT) and caption."""
+    fmt, when, cap, has_prop = _pub_summary(j, vn, p)
+    with parent.container(border=True, key=f"{kp}_auth_{j}_{vn}"):
+        c1, c2 = st.columns([1, 2.6])
+        with c1:
+            typ, info = asset_info(vn, j)
+            data = blob(info, small=False) if info and typ == "image" else None
+            if data is not None:
+                st.image(data, width="stretch")
+            else:
+                st.caption("video" if typ == "video" else "sin vista previa")
+        with c2:
+            st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b>"
+                        f"<span class='badge amber'>Sin autorizar</span></div>"
+                        f"<div class='find'><b>{esc(fmt)}</b> · {esc(when)} PT<br>{esc(cap)}</div>", unsafe_allow_html=True)
+            if not has_prop:
+                st.caption("Muse aún no propuso caption: puedes escribirlo tú o esperar su propuesta.")
+            if st.button("Revisar y autorizar", key=f"{kp}_pub_{j}_{vn}", type="primary", width="stretch"):
+                _go_studio(j, vn)
+
 def render_needs_elvin():
     review, authorize, unplanned = needs_elvin()
     if not review and not authorize:
@@ -1705,24 +1777,7 @@ def render_needs_elvin():
                 st.caption("Aprobadas: falta autorizar su publicación (hora, formato y caption).")
             _auth_grid = st.container(key="ag_auth_grid")
             for j, p, vn in authorize:
-                fmt, when, cap, has_prop = _pub_summary(j, vn, p)
-                with _auth_grid.container(border=True, key=f"na_auth_{j}_{vn}"):
-                    c1, c2 = st.columns([1, 2.6])
-                    with c1:
-                        typ, info = asset_info(vn, j)
-                        data = blob(info, small=False) if info and typ == "image" else None
-                        if data is not None:
-                            st.image(data, width="stretch")
-                        else:
-                            st.caption("video" if typ == "video" else "sin vista previa")
-                    with c2:
-                        st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b>"
-                                    f"<span class='badge green'>Aprobada</span></div>"
-                                    f"<div class='find'><b>{esc(fmt)}</b> · {esc(when)}<br>{esc(cap)}</div>", unsafe_allow_html=True)
-                        if not has_prop:
-                            st.caption("Muse aún no propuso caption: puedes escribirlo tú o esperar su propuesta.")
-                        if st.button("Revisar y autorizar", key=f"na_pub_{j}_{vn}", type="primary", width="stretch"):
-                            _go_studio(j, vn)
+                render_auth_card(_auth_grid, j, p, vn, kp="na")
     if unplanned:
         with st.expander(f"Aprobadas sin plan de publicación · {len(unplanned)}"):
             st.caption("No tienen fecha ni formato. Muse debe planificarlas o marcarlas como ya publicadas; "
@@ -1732,6 +1787,116 @@ def render_needs_elvin():
                 c1.markdown(f"<div class='find'><b>{esc(j)} · {esc(vn)}</b></div>", unsafe_allow_html=True)
                 if c2.button("Ver", key=f"na_unpl_{j}_{vn}", width="stretch"):
                     _go_studio(j, vn)
+
+def _inbox_pub_pending():
+    """publish/v1 inbox messages without ACK, all jobs: {(job, vn): [decision, ...]}."""
+    inbox, acks = gh_tree("decisions/inbox"), gh_tree("decisions/acks")
+    out = {}
+    if inbox is None or acks is None:
+        return out
+    for name in sorted(set(inbox) - set(acks)):
+        d = as_dict(parse_json(blob(inbox[name]), {}))
+        if d.get("action") in ("authorize_publish", "revoke_publish"):
+            out.setdefault((d.get("job_id"), d.get("version")), []).append(d)
+    return out
+
+def render_pub_row_card(j, p, vn, r, waiting, kp="pb"):
+    """One authorization record as a card (authorized/executing, with revoke) or a compact history row."""
+    label, tone = PUB_STATUS.get(r.get("status"), (r.get("status") or "?", ""))
+    active = r.get("status") in PUB_ACTIVE
+    ex = as_dict(r.get("execution"))
+    op = OP_LABELS.get(r.get("operation"), r.get("operation"))
+    when = _fmt_es_iso(r["scheduled_at"]) if r.get("scheduled_at") else "inmediata"
+    cap = str(r.get("caption") or "").strip()
+    cap_html = esc(cap).replace(chr(10), "<br>") if cap else ("sin caption (Story limpia)" if r.get("operation") == "story" else "sin caption")
+    extra = ""
+    if r.get("status") == "executed":
+        extra = f"<br>Publicada: {esc(ex.get('remote_url') or ex.get('remote_id') or '')}"
+    elif r.get("status") == "failed":
+        extra = f"<br>Error: {esc(ex.get('error') or '')}"
+    elif active and r.get("expires_at"):
+        extra = f"<br><span class='small'>Vence {esc(_fmt_es_iso(r['expires_at']))}</span>"
+    with st.container(border=True, key=f"{kp}_{r['authorization_id']}"):
+        if active:
+            c1, c2 = st.columns([1, 2.6])
+            with c1:
+                typ, info = asset_info(vn, j)
+                data = blob(info, small=False) if info and typ == "image" else None
+                if data is not None:
+                    st.image(data, width="stretch")
+                else:
+                    st.caption("video" if typ == "video" else "sin vista previa")
+            body = c2
+        else:
+            body = st.container()
+        with body:
+            st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b><span class='badge {tone}'>{esc(label)}</span></div>"
+                        f"<div class='find'><b>{esc(op)}</b> en {esc(r.get('platform'))} · <b>{esc(when)}</b><br>{cap_html}{extra}</div>",
+                        unsafe_allow_html=True)
+            if active:
+                if any(d.get("action") == "revoke_publish" and d.get("target_authorization_id") == r["authorization_id"] for d in waiting):
+                    st.caption("Revocación enviada · esperando al backend…")
+                elif r.get("status") == "authorized":
+                    if st.button("Revocar autorización", key=f"{kp}_rv_{r['authorization_id']}", width="stretch"):
+                        send_publish_revoke(r["authorization_id"], job_id=j, vn=vn)
+            if st.button("Abrir en Studio", key=f"{kp}_st_{r['authorization_id']}", width="stretch"):
+                _go_studio(j, vn)
+
+def render_publicaciones():
+    """Single place: what is authorized, what is not, and what already went out."""
+    enabled, _, _ = publish_caps()
+    render_notice()
+    if not enabled:
+        st.info("La autorización de publicación se activa cuando el backend de Muse soporte publish/v1.")
+        return
+    waiting = _inbox_pub_pending()
+    review, authorize, unplanned = needs_elvin()
+    active, history, sent = [], [], []
+    for j in jobs:
+        jid_ = j["job_id"]
+        plan = job_plan(jid_)
+        for v in job_versions(jid_):
+            vn = v["version"]
+            recs = publish_records(vn, jid_)
+            for r in recs:
+                (active if r.get("status") in PUB_ACTIVE else history).append((jid_, plan, vn, r))
+            if not any(r.get("status") in PUB_ACTIVE for r in recs):
+                for d in waiting.get((jid_, vn), []):
+                    if d.get("action") == "authorize_publish":
+                        sent.append((jid_, plan, vn, d))
+    _t = lambda it: str(it[3].get("scheduled_at") or "0")
+    active.sort(key=_t)
+    history.sort(key=lambda it: str((it[3].get("history") or [{}])[-1].get("at") or ""), reverse=True)
+    st.markdown(f"<div class='pipe-title'>Autorizadas · {len(active)}</div>", unsafe_allow_html=True)
+    if not active:
+        st.info("Ninguna publicación autorizada ahora mismo.")
+    with st.container(key="pb_grid_active"):
+        for j, p, vn, r in active:
+            render_pub_row_card(j, p, vn, r, waiting.get((j, vn), []), kp="pba")
+    if sent:
+        st.markdown(f"<div class='pipe-title'>Enviadas · esperando al backend · {len(sent)}</div>", unsafe_allow_html=True)
+        for j, p, vn, d in sent:
+            st.markdown(f"<div class='find'><b>{esc(p.get('title') or j)} · {esc(vn)}</b> · "
+                        f"{esc(OP_LABELS.get(d.get('operation'), d.get('operation')))} · {esc(_fmt_es_iso(d.get('scheduled_at')))}</div>",
+                        unsafe_allow_html=True)
+    st.markdown(f"<div class='pipe-title'>Sin autorizar · aprobadas · {len(authorize)}</div>", unsafe_allow_html=True)
+    if not authorize:
+        st.success("✓ No hay piezas aprobadas pendientes de autorizar.")
+    with st.container(key="pb_grid_auth"):
+        for j, p, vn in authorize:
+            render_auth_card(st.container(), j, p, vn, kp="pb")
+    st.markdown(f"<div class='pipe-title'>Sin aprobar · {len(review)}</div>", unsafe_allow_html=True)
+    if review:
+        st.caption(", ".join(f"{(p.get('title') or j)} {vn}" for j, p, vn in review))
+        if st.button("Ir a Agenda para aprobarlas", key="pb_to_agenda", width="stretch"):
+            st.session_state.tab = "Agenda"
+            st.rerun()
+    else:
+        st.caption("Nada por aprobar.")
+    if history:
+        with st.expander(f"Historial · publicadas, revocadas, vencidas · {len(history)}"):
+            for j, p, vn, r in history:
+                render_pub_row_card(j, p, vn, r, [], kp="pbh")
 
 def render_agenda():
     left, right = st.columns([1, 1.6], gap="medium")
@@ -1869,6 +2034,9 @@ if TAB == "Studio":
 
 elif TAB == "Agenda":
     render_agenda()
+
+elif TAB == "Publicaciones":
+    render_publicaciones()
 
 elif TAB == "Queue":
     st.subheader("Queue")
