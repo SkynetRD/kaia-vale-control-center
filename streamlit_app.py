@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v8.2"
+APP_VERSION = "v8.3"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -1062,24 +1062,27 @@ def stage_data():
     s = state.get("state", "")
     has = bool(versions)
     generating = LIVE and s == "GENERATING"
-    vd = verdict(cur) if cur else {}
-    ve = cur_info.get("veredicto_efectivo", "")
+    v = sel or cur   # the pipeline describes the version on screen, not always the latest
+    vd = verdict(v) if v else {}
+    ve = vinfo(v).get("veredicto_efectivo", "") if v else ""
+    dec = decision_action(v) if v else None
+    pend = bool(v) and (is_reviewable(v) or bool(inflight_for(v)))
     published = s in ("PUBLISHED", "DONE")
     stages = [("Brief", has or s == "GENERATING"),
               ("Generate", has and not generating),
               ("Muse QC", bool(vd)),
-              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "ELVIN_DECISION_REQUIRED", "READY_FOR_ELVIN_REVIEW", "APROBADO") or decision_action(cur) == "approve_final"),
-              ("Elvin", is_decided(cur)),
+              ("Supervisor", ve in ("CORREGIR", "ESCALAR", "ELVIN_DECISION_REQUIRED", "READY_FOR_ELVIN_REVIEW", "APROBADO") or dec == "approve_final"),
+              ("Elvin", is_decided(v) if v else False),
               ("Publish", published)]
     if published:
         return [(n, True) for n, _ in stages], None, None
     if generating:
         return stages, 1, None
-    if CUR_PEND or CUR_INFLIGHT:
+    if pend:
         return stages, 4, None
-    if CUR_DECISION in ("reject", "request_changes"):
+    if dec in ("reject", "request_changes"):
         return stages, None, 4
-    if CUR_DECISION == "approve_final":
+    if dec == "approve_final":
         return stages, 5, None
     if s == "ESCALATED_INTERNAL" or ve in ("CORREGIR", "ESCALAR"):
         # No espera a Elvin: el supervisor la detuvo y Muse/Elvin deben resolverlo antes.
@@ -1207,7 +1210,7 @@ def pipeline_items_html():
     out = []
     for i, (name, done) in enumerate(stages):
         if i == stopped_idx:
-            cls, sym = "stopped", DECISION_ICONS.get(CUR_DECISION, "✕")
+            cls, sym = "stopped", DECISION_ICONS.get(decision_action(sel or cur), "✕")
         elif i == active_idx:
             cls, sym = "active", str(i + 1)
         elif done and (active_idx is None or i < active_idx) and (stopped_idx is None or i < stopped_idx):
@@ -1502,6 +1505,9 @@ def render_publish_block():
     _pop = proposal.get("operation") or _plan.get("operation")
     _pwhen = proposal.get("scheduled_for") or (f"{_plan.get('planned_for')}T{_plan.get('slot')}" if _plan.get("planned_for") and _plan.get("slot") else "")
     _pcap = str(proposal.get("caption") or _plan.get("caption_draft") or "").strip()
+    if not (_pop or _pwhen):
+        st.markdown("<div class='review warn'><b>Sin propuesta de Muse</b> · esta pieza no tiene plan ni propuesta de formato, hora o caption "
+                    "(es un job fuera de la agenda). Elige tú el formato y la hora; nada se rellena solo.</div>", unsafe_allow_html=True)
     if _pop or _pwhen:
         _src = "Propuesta de Muse" if proposal else "Plan de Muse"
         try:
@@ -1519,24 +1525,30 @@ def render_publish_block():
         ops = targets["platforms"][platform]["operations"]
         if st.session_state.get("pub_operation") not in ops:
             st.session_state.pop("pub_operation", None)
-        operation = st.selectbox("Formato", ops, format_func=lambda o: OP_LABELS.get(o, o), key="pub_operation")
+        _has_op = bool(proposal.get("operation") or _plan.get("operation"))
+        operation = st.selectbox("Formato", ops, index=0 if _has_op else None, placeholder="Elige el formato",
+                                 format_func=lambda o: OP_LABELS.get(o, o), key="pub_operation")
         st.caption(f"Cuenta: {targets['platforms'][platform]['account']}")
         caption = st.text_area("Caption exacto (incluye hashtags)", key="pub_caption")
         if proposal.get("rationale"):
             st.caption(f"Por qué este caption: {proposal.get('rationale')}")
-        when = st.radio("Cuándo", ("Ahora", "Programar"), horizontal=True, key="pub_when")
+        _has_when = bool(_proposal_when(proposal, _plan)) or "pub_when" in st.session_state
+        when = st.radio("Cuándo", ("Ahora", "Programar"), index=None if not _has_when else 0, horizontal=True, key="pub_when")
         scheduled = None
         if when == "Programar":
             c1, c2 = st.columns(2)
             day = c1.date_input("Día", key="pub_day")
             hour = c2.time_input("Hora (PT)" if LOCAL_TZ is not timezone.utc else "Hora (UTC)", key="pub_time")
             scheduled = datetime.combine(day, hour).replace(tzinfo=LOCAL_TZ)
-        _when_lbl = _fmt_es(scheduled) if scheduled else "ahora mismo"
-        st.markdown(f"<div class='find'><b>Vas a autorizar:</b> {esc(OP_LABELS.get(operation, operation))} en {esc(platform)} · "
+        _when_lbl = _fmt_es(scheduled) if scheduled else ("ahora mismo" if when == "Ahora" else "sin elegir")
+        st.markdown(f"<div class='find'><b>Vas a autorizar:</b> {esc(OP_LABELS.get(operation, operation) if operation else 'formato sin elegir')} en {esc(platform)} · "
                     f"{esc(_when_lbl)} · {'con caption' if caption.strip() else 'sin caption'}</div>", unsafe_allow_html=True)
         confirm = st.checkbox(f"Confirmo publicar {sel} de {jid} en {platform} ({OP_LABELS.get(operation, operation)}), una sola vez.",
                               key="pub_confirm")
-        if st.button("Autorizar publicación", key="pub_send", type="primary", width="stretch", disabled=not confirm):
+        _ready = bool(operation) and when in ("Ahora", "Programar")
+        if not _ready:
+            st.caption("Elige formato y cuándo publicar para poder autorizar.")
+        if st.button("Autorizar publicación", key="pub_send", type="primary", width="stretch", disabled=not (confirm and _ready)):
             if not caption.strip() and operation not in as_list(targets.get("caption_optional_operations")):
                 st.error("Escribe el caption.")
             else:
