@@ -33,9 +33,11 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-APP_VERSION = "v9.1"
+APP_VERSION = "v10.0"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
+MUSE_DOWN_MIN = 15             # v10: Muse with an open task and no own heartbeat for this long = down
+DAEMON_DOWN_S = 600            # v10: daemon_health reaches the bus every 5 min (was every cycle)
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
 ASSET_APPROVAL_RE = re.compile(r"aprob|apru[eé]b|autoriz|publica|regener", re.I)
 WATCH_EVERY_S = 12          # cheap bus poll (1 API call, no full rerun unless something changed)
@@ -56,7 +58,10 @@ DECISION_LABELS = {"approve_final": "Approved by Elvin", "reject": "Rejected by 
 DECISION_TONE = {"approve_final": "green", "reject": "red", "request_changes": "amber"}
 ACTION_NAMES = {"approve_final": "Approve", "reject": "Reject", "request_changes": "Request changes"}
 VERDICT_LABELS = {"READY_FOR_ELVIN_REVIEW": ("Ready for review", "violet"), "CORREGIR": ("Needs fixes", "amber"),
-                  "ESCALAR": ("Escalated", "red"), "ELVIN_DECISION_REQUIRED": ("Needs your decision", "violet"), "APROBADO": ("QA approved", "green")}
+                  "ESCALAR": ("Escalated", "red"), "ELVIN_DECISION_REQUIRED": ("Needs your decision", "violet"), "APROBADO": ("QA approved", "green"),
+                  "APPROVED": ("Approved by Elvin", "green"), "DECIDIDO": ("Decided by Elvin", "green"),
+                  "CHANGES_REQUESTED": ("Changes requested", "amber"), "REJECTED": ("Rejected by Elvin", "red"),
+                  "READY_PENDING_PUSH": ("Uploading to bus", "violet")}
 DECISION_ICONS = {"approve_final": "✓", "reject": "✕", "request_changes": "↻"}
 
 st.set_page_config(page_title="Kaia Vale · Mission Control", layout="wide", initial_sidebar_state="collapsed")
@@ -76,7 +81,7 @@ H_RAW = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github.r
 H_JSON = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
 DEFAULTS = {"auth": False, "login_attempts": 0, "login_locked_until": 0.0,
-            "tab": "Revisar", "sel_ver": None, "compare": False, "focus": False, "inspector": True,
+            "tab": "Hoy", "sel_ver": None, "compare": False, "focus": False, "inspector": True,
             "change_open": False, "inflight": {}, "local_decided": {}, "notice": None,
             "answered_q": None}
 for k, v in DEFAULTS.items():
@@ -165,7 +170,7 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 /* nav: tabs + Salir in one row, job selector full width below */
 .st-key-kv_nav [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.4rem!important}
 .st-key-kv_nav [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important;width:auto!important}
-.st-key-kv_nav [data-testid="stColumn"]:nth-child(6){order:8;flex:1 1 100%!important}
+.st-key-kv_nav [data-testid="stColumn"]:nth-child(7){order:8;flex:1 1 100%!important}
 .st-key-kv_nav button{min-height:34px!important;padding:0 2px!important}
 .st-key-kv_nav button p{font-size:.72rem!important;white-space:nowrap!important}
 /* decision + tools rows never stack */
@@ -392,8 +397,9 @@ def clear_bus_cache():
     except NameError:
         pass
 
-def gh_put_json(path, obj, msg, *, create_only=False):
-    content = base64.b64encode(json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")).decode()
+def gh_put_json(path, obj, msg, *, create_only=False, raw=False):
+    data = obj if raw else json.dumps(obj, ensure_ascii=False, indent=2)
+    content = base64.b64encode(data.encode("utf-8")).decode()
     last = "error desconocido"
     for attempt in range(2):
         body = {"message": msg, "content": content, "branch": BRANCH}
@@ -517,6 +523,8 @@ def _bus_sig():
         return None
     h = hashlib.md5()
     for p_, e_ in idx["files"].items():
+        if p_ == "progress/daemon_health.json":
+            continue   # v10: daemon liveness alone never reruns the whole app
         h.update(p_.encode("utf-8")); h.update(str(e_.get("sha")).encode("utf-8"))
     return h.hexdigest()
 
@@ -605,6 +613,25 @@ budget = as_dict(gh_json("budget.json", {}))
 # muse_status.json is global. If it names a job, only apply it to that job.
 MS_JOB = ms.get("job_id") or ms.get("job")
 MS_APPLIES = (not MS_JOB) or MS_JOB == jid
+
+MUSE_ACTIVE = {"RECEIVED", "PLANNING", "WORKING", "WAITING_ON_TOOL", "VALIDATING",
+               "SUPERVISOR_REVIEW", "CORRECTING", "BLOCKED"}
+
+def muse_activity():
+    """v10: Muse's real activity, from ITS OWN events. The old sync daemon renewed last_heartbeat and reset
+    active states to IDLE ("IDLE: daemon reseteó..."), which hid a stopped Muse; those events are ignored here."""
+    hist = [h for h in as_list(ms.get("history")) if isinstance(h, dict)]
+    own = [h for h in hist if not str(h.get("event", "")).startswith("IDLE: daemon")]
+    last = own[-1] if own else {}
+    status = str(ms.get("status") or "")
+    hb_min = hours_since(ms.get("last_heartbeat")) * 60
+    interrupted = status == "IDLE" and str(ms.get("current_step") or "").startswith("daemon: sin heartbeat")
+    return {"status": status, "interrupted": interrupted,
+            "down": interrupted or (status in MUSE_ACTIVE and hb_min > MUSE_DOWN_MIN),
+            "last_event": str(last.get("event") or ""), "own_age_h": hours_since(last.get("ts")),
+            "task": ms.get("current_task")}
+
+MUSE = muse_activity()
 
 AGE = hours_since(state.get("updated"))
 LIVE = AGE < .25
@@ -928,10 +955,13 @@ else:
     _dh = as_dict(gh_json("progress/daemon_health.json", {}))
     if _dh.get("cycle_ended"):
         _age = time.time() - _parse_ts_or(_dh.get("cycle_ended"), time.time())
-        if _age > 240:
+        if _age > DAEMON_DOWN_S:
             st.markdown(f"<div class='review red'><b>Backend apagado</b> · el daemon no completa un ciclo hace {esc(human_age(_age / 3600))}. "
                         "Las autorizaciones y aprobaciones que envíes no se confirmarán hasta que se reinicie.</div>", unsafe_allow_html=True)
-    hb = HEALTH["heartbeat_h"]
+    if MUSE["down"] and st.session_state.tab != "Hoy":
+        st.markdown(f"<div class='review red'><b>Muse parado</b> · sin actividad propia hace {esc(human_age(MUSE['own_age_h']))}: "
+                    f"{esc(MUSE['last_event'][:140])}. Ve a Hoy para pedirle que retome.</div>", unsafe_allow_html=True)
+    hb = HEARTBEAT_STALE_H if MUSE["down"] else HEALTH["heartbeat_h"]
     if hb > HEARTBEAT_STALE_H:
         st.caption(f"Sin actividad registrada de Muse · último heartbeat hace {human_age(hb)}"
                    + (f" · última tarea: {ms.get('current_task')}" if ms.get("current_task") else ""))
@@ -940,7 +970,8 @@ else:
 # ───────────────────────── Muse yes/no blocker ─────────────────────────
 ms_blocked = ms.get("status") == "BLOCKED_ON_ELVIN"
 q = str(ms.get("needs_decision") or "").strip()
-q_key = f"{q}|{ms.get('question_id', '')}"
+QID = str(ms.get("question_id") or "")
+q_key = f"{q}|{QID}"
 # An asset approval (or publish authorization) is only valid as a job/version decision.
 # A free-form yes/no is not bound to an asset, version, supervisor verdict or sha.
 q_is_asset_approval = bool(ms.get("asset")) or bool(ASSET_APPROVAL_RE.search(q))
@@ -959,7 +990,8 @@ elif ms_blocked and q and st.session_state.answered_q != q_key:
     y, n = st.columns(2)
 
     def _send_answer(answer):
-        ok, d = gh_put_json("progress/elvin_answer.json", {"question": q, "answer": answer, "timestamp": now_iso()},
+        ok, d = gh_put_json("progress/elvin_answer.json", {"question": q, "question_id": QID or None,
+                                                           "answer": answer, "timestamp": now_iso()},
                             f"elvin answer: {answer}")
         if ok:
             st.session_state.answered_q = q_key
@@ -1024,6 +1056,13 @@ def send_decision(action, note="", job_id=None, vn=None):
     # Deterministic id: the same job/version/asset/action always maps to the same inbox file,
     # so a double tap or a stale API read hits "already exists" instead of creating a duplicate.
     did = str(uuid.uuid5(DECISION_NS, f"{J}|{V}|{fresh_asset.get('sha')}|{action}"))
+    # v10: if the backend already REJECTED this exact decision (e.g. the version was not decidable yet),
+    # a resend needs a new id; before, the same id hit "already exists" forever.
+    for n in range(1, 21):
+        prev = as_dict(gh_json(f"decisions/acks/{did}.json", {}, fresh=True))
+        if str(prev.get("status", "")).lower() not in ACK_FAIL:
+            break
+        did = str(uuid.uuid5(DECISION_NS, f"{J}|{V}|{fresh_asset.get('sha')}|{action}|retry{n}"))
     obj = {"decision_id": did, "job_id": J, "version": V, "action": action, "timestamp": now_iso(),
            "note": note.strip(), "asset_file": asset_file, "asset_sha": asset_sha256,
            "asset_git_sha": fresh_asset.get("sha")}
@@ -1296,7 +1335,8 @@ def render_decision_block():
 # ───────────────────────── publish/v1 (protocol/PUBLISH_PROTOCOL.md) ─────────────────────────
 PUB_STATUS = {"authorized": ("Autorizada", "violet"), "executing": ("Publicando…", "violet"),
               "executed": ("Publicada", "green"), "failed": ("Falló", "red"),
-              "revoked": ("Revocada", "amber"), "expired": ("Vencida", "amber")}
+              "revoked": ("Revocada", "amber"), "expired": ("Vencida", "amber"),
+              "needs_check": ("Comprueba si salió", "red")}
 PUB_ACTIVE = {"authorized", "executing"}
 OP_LABELS = {"feed_post": "Post en feed", "reel": "Reel", "story": "Story", "carousel": "Carrusel",
              "video": "Video", "post": "Post"}
@@ -2059,7 +2099,7 @@ def render_sistema():
     st.markdown("<div class='pipe-title'>Backend y Muse</div>", unsafe_allow_html=True)
     dh = as_dict(gh_json("progress/daemon_health.json", {}))
     age = (time.time() - _parse_ts_or(dh.get("cycle_ended"), 0)) if dh.get("cycle_ended") else None
-    rows = [f"<div class='find'><b>Daemon</b> · " + (f"último ciclo hace {esc(human_age(age / 3600))}" + (" · <span class='bad'>detenido</span>" if age > 240 else " · <span class='ok'>activo</span>") if age is not None else "sin datos") + "</div>",
+    rows = [f"<div class='find'><b>Daemon</b> · " + (f"último ciclo hace {esc(human_age(age / 3600))}" + (" · <span class='bad'>detenido</span>" if age > DAEMON_DOWN_S else " · <span class='ok'>activo</span>") if age is not None else "sin datos") + "</div>",
             f"<div class='find'><b>Decisiones sin confirmar</b> · {int(num(dh.get('inbox_pending')))}</div>",
             f"<div class='find'><b>Muse</b> · {esc(ms.get('status') or '—')} · {esc(str(ms.get('current_task') or ''))[:90]}</div>",
             f"<div class='find'><b>Presupuesto supervisor</b> · ${num(budget.get('monthly_used_usd')):.2f} de ${num(budget.get('monthly_cap_usd'), 5):.2f} este mes</div>"]
@@ -2092,21 +2132,143 @@ def render_sistema():
     with st.expander("Modelo y reglas aprendidas"):
         render_model()
 
+def _next_task_id(slug):
+    names = [n for n in (gh_dir("tasks") or {}) if n.endswith(".json") and n[:4].isdigit()]
+    num_ = max((int(n[:4]) for n in names), default=0) + 1
+    return f"{num_:04d}-{slug}"
+
+def send_resume_task(changes):
+    """Elvin asks Muse to resume (mailbox/v1). Elvin's click is the approval (approved_by_elvin_at)."""
+    tid = _next_task_id("retomar-trabajo")
+    lines = [f"# Tarea {tid[:4]} — Retomar el trabajo interrumpido (pedido desde el Control Center)", "",
+             f"Última actividad propia de Muse: {MUSE['last_event'][:300] or '—'}", "",
+             "Hacer, en este orden:",
+             "1. Retoma la tarea interrumpida desde su último paso completo (no repitas generaciones ya registradas).",
+             "2. Atiende las piezas con cambios pedidos por Elvin: usa `orchestrator.elvin_change_request(job_id)` y aplica su nota "
+             "como corrección obligatoria de la siguiente versión:"]
+    lines += [f"   - {j}" for j in changes] or ["   - (ninguna)"]
+    lines += ["3. En esperas largas (MiniMax, Krea, supervisor) usa `with progress.keepalive(...)` para que el Control Center vea que sigues vivo.",
+              "4. Al terminar: `reports/<id>.md` con lo hecho y status `done`.",
+              "Reglas permanentes: nada pagado sin autorización, no publicar sin approve_final + authorize_publish, no borrar historial."]
+    ok1, d1 = gh_put_json(f"tasks/{tid}.md", "\n".join(lines), f"task {tid}", create_only=True, raw=True)
+    if not ok1:
+        st.error(f"No se pudo crear la tarea: {d1}")
+        return
+    ok2, d2 = gh_put_json(f"tasks/{tid}.json", {"schema": "mailbox/v1", "task_id": tid,
+                          "title": "Retomar el trabajo interrumpido", "instructions": f"tasks/{tid}.md",
+                          "approved_by_elvin_at": now_iso(), "created": now_iso(), "author": "dashboard"},
+                          f"task {tid}", create_only=True)
+    if ok2:
+        clear_bus_cache()
+        set_notice(f"Tarea {tid} enviada a Muse. Debe pasar a 'received' en ≤ 2 min.", "success")
+        st.rerun()
+    else:
+        st.error(f"No se pudo crear la tarea: {d2}")
+
+def _card(title, body, tone=""):
+    return f"<div class='review {tone}'><b>{esc(title)}</b><br>{body}</div>"
+
+def render_hoy():
+    """v10 home: system health on top, then what is yours, what Muse is doing and what goes out next."""
+    render_notice()
+    dh = as_dict(gh_json("progress/daemon_health.json", {}))
+    d_age = (time.time() - _parse_ts_or(dh.get("cycle_ended"), 0)) if dh.get("cycle_ended") else None
+    d_len = (_parse_ts_or(dh.get("cycle_ended"), 0) - _parse_ts_or(dh.get("cycle_started"), 0)) if dh.get("cycle_started") else None
+    pend = len(HEALTH["pending"]) if HEALTH else None
+    h1, h2, h3 = st.columns(3)
+    if MUSE["down"]:
+        h1.markdown(_card("Muse · PARADO", f"Sin actividad propia hace {esc(human_age(MUSE['own_age_h']))}.<br>"
+                          f"Último paso: {esc(MUSE['last_event'][:160])}", "red"), unsafe_allow_html=True)
+    elif MUSE["status"] in MUSE_ACTIVE:
+        h1.markdown(_card(f"Muse · {MUSE['status']}", esc(str(ms.get("current_step") or "")[:160]), "green"), unsafe_allow_html=True)
+    else:
+        h1.markdown(_card(f"Muse · {MUSE['status'] or 'sin datos'}", f"Última actividad propia hace {esc(human_age(MUSE['own_age_h']))}"),
+                    unsafe_allow_html=True)
+    if d_age is None:
+        h2.markdown(_card("Daemon · sin datos", "No hay daemon_health.json en el bus.", "warn"), unsafe_allow_html=True)
+    elif d_age > DAEMON_DOWN_S:
+        h2.markdown(_card("Daemon · APAGADO", f"Último ciclo hace {esc(human_age(d_age / 3600))}.", "red"), unsafe_allow_html=True)
+    else:
+        slow = d_len is not None and d_len > 40
+        h2.markdown(_card("Daemon · " + ("LENTO" if slow else "OK"),
+                          f"Último ciclo hace {esc(human_age(d_age / 3600))}" + (f", duró {int(d_len)} s" if d_len is not None else ""),
+                          "warn" if slow else "green"), unsafe_allow_html=True)
+    if pend is None:
+        h3.markdown(_card("Decisiones · sin datos", "No se pudo leer el inbox.", "warn"), unsafe_allow_html=True)
+    else:
+        h3.markdown(_card("Decisiones · " + ("AL DÍA" if not pend else f"{pend} SIN CONFIRMAR"),
+                          f"Último ACK hace {esc(human_age(hours_since(dh.get('last_ack_at'))))}", "green" if not pend else "warn"),
+                    unsafe_allow_html=True)
+
+    changes = sorted(((j["job_id"], j.get("updated")) for j in jobs if j.get("state") == "CHANGES_REQUESTED"),
+                     key=lambda x: str(x[1] or ""))
+    if MUSE["down"] and st.button("Pedir a Muse que retome", key="hoy_resume", type="primary", width="stretch"):
+        send_resume_task([j for j, _ in changes])
+
+    c1, c2, c3 = st.columns(3, gap="medium")
+    review, authorize, _unpl = needs_elvin()
+    with c1:
+        st.markdown(f"<div class='pipe-title'>Te toca · {len(review) + len(authorize)}</div>", unsafe_allow_html=True)
+        if ms.get("status") == "BLOCKED_ON_ELVIN" and ms.get("needs_decision"):
+            st.markdown(_card("Pregunta de Muse", esc(str(ms.get("needs_decision"))[:300]), "warn"), unsafe_allow_html=True)
+        if not review and not authorize:
+            st.markdown(_card("Nada por decidir ahora", f"{len(changes)} pieza(s) esperan que Muse aplique tus cambios." if changes else "Muse sigue con la agenda."),
+                        unsafe_allow_html=True)
+        for j, p, vn in review:
+            with st.container(border=True, key=f"hoy_rev_{j}_{vn}"):
+                st.markdown(f"<div class='ins-head'><b>{esc(p.get('title') or j)} · {esc(vn)}</b>{badge_html(vn, j)}</div>", unsafe_allow_html=True)
+                if st.button("Revisar", key=f"hoy_go_{j}_{vn}", type="primary", width="stretch"):
+                    _go_studio(j, vn)
+        if authorize:
+            st.caption(f"{len(authorize)} aprobada(s) sin autorizar publicación.")
+            if st.button("Autorizar publicaciones", key="hoy_to_pub", width="stretch"):
+                st.session_state.tab = "Publicaciones"
+                st.rerun()
+    with c2:
+        st.markdown(f"<div class='pipe-title'>Muse · {len(changes)} esperando</div>", unsafe_allow_html=True)
+        now_txt = esc(str(ms.get("current_task") or "—")) if not MUSE["down"] else esc(MUSE["last_event"][:160])
+        st.markdown(_card("Ahora" if not MUSE["down"] else "Interrumpido en", now_txt, "red" if MUSE["down"] else ""), unsafe_allow_html=True)
+        for j, upd in changes:
+            st.markdown(f"<div class='find'><b>{esc(j)}</b><br><span class='small'>Cambios pedidos hace {esc(human_age(hours_since(upd)))}</span></div>",
+                        unsafe_allow_html=True)
+        stuck = [(j["job_id"], v["version"]) for j in jobs for v in as_list(j.get("versions"))
+                 if isinstance(v, dict) and v.get("veredicto_efectivo") == "READY_PENDING_PUSH"]
+        checks = [(j["job_id"], v["version"], r) for j in jobs for v in job_versions(j["job_id"])
+                  for r in publish_records(v["version"], j["job_id"]) if r.get("status") == "needs_check"]
+        st.markdown(f"<div class='find'>Atascadas: {len(stuck)} subiendo · {len(checks)} publicación(es) por comprobar</div>", unsafe_allow_html=True)
+        for j, vn, r in checks:
+            st.markdown(_card(f"{j} · {vn}", f"{esc(OP_LABELS.get(r.get('operation'), r.get('operation')))}: la publicación no cerró. Comprueba en la plataforma si salió.", "red"),
+                        unsafe_allow_html=True)
+    with c3:
+        upcoming = sorted(((j["job_id"], v["version"], r) for j in jobs for v in job_versions(j["job_id"])
+                           for r in publish_records(v["version"], j["job_id"]) if r.get("status") == "authorized"),
+                          key=lambda x: str(x[2].get("scheduled_at") or ""))
+        st.markdown(f"<div class='pipe-title'>Agenda · {len(upcoming)} autorizada(s)</div>", unsafe_allow_html=True)
+        if not upcoming:
+            st.caption("Nada autorizado para publicar.")
+        for j, vn, r in upcoming[:10]:
+            when = _fmt_es_iso(r["scheduled_at"]) if r.get("scheduled_at") else "inmediata"
+            late = r.get("scheduled_at") and hours_since(r["scheduled_at"]) * 60 > 5
+            body = f"{esc(OP_LABELS.get(r.get('operation'), r.get('operation')))} · {esc(r.get('platform'))}"
+            if late:
+                body += "<br>No se ejecutó a su hora: ningún publicador la tomó."
+            st.markdown(_card(f"{when} · {j}", body, "red" if late else ""), unsafe_allow_html=True)
+
 def render_nav():
     with NAV_SLOT:
-        nav = st.columns([.8, .72, .8, .72, .8, 3.5, .6])
+        nav = st.columns([.6, .8, .72, .8, .72, .8, 3, .6])
         _nr, _na, _ = needs_elvin()
         _n_review = len(_nr) + len(_na)
-        for i, name in enumerate(("Revisar", "Agenda", "Publicaciones", "Studio", "Sistema")):
+        for i, name in enumerate(("Hoy", "Revisar", "Agenda", "Publicaciones", "Studio", "Sistema")):
             label = f"Revisar {_n_review}" if name == "Revisar" and _n_review else ("Publicar" if name == "Publicaciones" else name)
             if nav[i].button(label, key=f"nav_{name}", type="primary" if st.session_state.tab == name else "secondary", width="stretch"):
                 st.session_state.tab = name
                 st.session_state.compare = False
                 st.session_state.focus = False
                 st.rerun()
-        chosen = (nav[5].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
+        chosen = (nav[6].selectbox("Job", job_ids, index=job_ids.index(jid), label_visibility="collapsed")
                   if st.session_state.tab == "Studio" else jid)
-        if nav[6].button("Salir", key="logout", width="stretch"):
+        if nav[7].button("Salir", key="logout", width="stretch"):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.session_state["cookie_clear"] = True
@@ -2202,6 +2364,9 @@ if TAB == "Studio":
             with insp:
                 with st.container(key="kv_insp"):
                     st.markdown(f"<div class='pipe-title'>Inspector</div>{inspector_html(sel)}", unsafe_allow_html=True)
+
+elif TAB == "Hoy":
+    render_hoy()
 
 elif TAB == "Agenda":
     render_agenda()
