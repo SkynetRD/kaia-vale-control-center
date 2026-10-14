@@ -24,7 +24,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "v7.3"
+APP_VERSION = "v7.4"
 DECISION_NS = uuid.UUID("6f1c2d3e-9a4b-4c5d-8e7f-0a1b2c3d4e5f")   # fixed namespace for idempotent decision ids
 HEARTBEAT_STALE_H = 2          # Muse heartbeat older than this = no live activity
 # Questions that try to approve/authorize an asset or a publication must go through job/version decisions.
@@ -134,6 +134,11 @@ video{max-height:calc(100vh - 300px)!important;background:#05060a!important;bord
 .small{font-size:.72rem;color:var(--muted)}
 .kv-foot{font-size:.66rem;color:#4a5062;text-align:right;margin-top:4px}
 .mobile-only{display:none}
+@media(min-width:761px){
+.st-key-ag_grid,.st-key-ag_review_grid,.st-key-ag_auth_grid{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:.9rem!important;align-items:start}
+.st-key-ag_grid>*,.st-key-ag_review_grid>*,.st-key-ag_auth_grid>*{min-width:0}
+[class*="st-key-na_auth_"] [data-testid="stImage"] img{max-height:220px!important}
+}
 @media(max-width:760px){
 .block-container,[data-testid="stMainBlockContainer"]{padding:.35rem .6rem 5rem!important}
 .desktop-only,.st-key-kv_pipe,.st-key-kv_insp,.st-key-tog_insp{display:none!important}
@@ -1524,16 +1529,15 @@ def render_needs_elvin():
         with st.container(key="ag_needs"):
             st.markdown(f"<div class='pipe-title'>Necesita tu aprobación · {len(review)} por aprobar · "
                         f"{len(authorize)} por autorizar publicación</div>", unsafe_allow_html=True)
-            for i in range(0, len(review), 2):
-                cols = st.columns(2)
-                for col, (j, p, vn) in zip(cols, review[i:i + 2]):
-                    with col:
-                        if p.get("planned_for"):
-                            st.caption(f"Para {day_label(p['_date'])}")
-                        render_agenda_card(j, p, vn, kp="na")
+            _auth_grid = st.container(key="ag_review_grid")
+            for j, p, vn in review:
+                with _auth_grid.container(key=f"na_item_{j}_{vn}"):
+                    if p.get("planned_for"):
+                        st.caption(f"Para {day_label(p['_date'])}")
+                    render_agenda_card(j, p, vn, kp="na")
             for j, p, vn in authorize:
                 fmt, when, cap, has_prop = _pub_summary(j, vn, p)
-                with st.container(border=True, key=f"na_auth_{j}_{vn}"):
+                with _auth_grid.container(border=True, key=f"na_auth_{j}_{vn}"):
                     c1, c2 = st.columns([1, 2.6])
                     with c1:
                         typ, info = asset_info(vn, j)
@@ -1561,56 +1565,57 @@ def render_needs_elvin():
                     _go_studio(j, vn)
 
 def render_agenda():
-    render_needs_elvin()
-    by_day, unplanned = agenda_index()
-    today = today_local()
-    if "ag_day" not in st.session_state:
-        st.session_state.ag_day = today
-    with st.container(key="ag_quick"):
-        q1, q2, q3 = st.columns([1, 1, 1.3])
-    q4 = st.container()
-    if q1.button("Hoy", key="ag_today", width="stretch"):
-        st.session_state.ag_day = today
-    if q2.button("Mañana", key="ag_tomorrow", width="stretch"):
-        st.session_state.ag_day = today + timedelta(days=1)
-    if q3.button("Próx. viernes", key="ag_friday", width="stretch"):
-        st.session_state.ag_day = next_weekday(today + timedelta(days=1), 4)
-    picked = q4.date_input("Día", value=st.session_state.ag_day, key=f"ag_date_{st.session_state.ag_day}",
-                           label_visibility="collapsed", format="DD/MM/YYYY")
-    if picked != st.session_state.ag_day:
-        st.session_state.ag_day = picked
-        st.rerun()
-    day = st.session_state.ag_day
-    monday = day - timedelta(days=day.weekday())
-    week = [monday + timedelta(days=i) for i in range(7)]
-    labels = {day_label(d, len(by_day.get(d, []))): d for d in week}
-    chosen = st.pills("Semana", list(labels), default=day_label(day, len(by_day.get(day, []))),
-                      key=f"ag_week_{day}", label_visibility="collapsed")
-    if chosen and labels.get(chosen) != day:
-        st.session_state.ag_day = labels[chosen]
-        st.rerun()
+    left, right = st.columns([1, 1.6], gap="medium")
+    with left:
+        render_needs_elvin()
+    with right:
+        by_day, unplanned = agenda_index()
+        today = today_local()
+        if "ag_day" not in st.session_state:
+            st.session_state.ag_day = today
+        with st.container(key="ag_quick"):
+            q1, q2, q3 = st.columns([1, 1, 1.3])
+        q4 = st.container()
+        if q1.button("Hoy", key="ag_today", width="stretch"):
+            st.session_state.ag_day = today
+        if q2.button("Mañana", key="ag_tomorrow", width="stretch"):
+            st.session_state.ag_day = today + timedelta(days=1)
+        if q3.button("Próx. viernes", key="ag_friday", width="stretch"):
+            st.session_state.ag_day = next_weekday(today + timedelta(days=1), 4)
+        picked = q4.date_input("Día", value=st.session_state.ag_day, key=f"ag_date_{st.session_state.ag_day}",
+                               label_visibility="collapsed", format="DD/MM/YYYY")
+        if picked != st.session_state.ag_day:
+            st.session_state.ag_day = picked
+            st.rerun()
+        day = st.session_state.ag_day
+        monday = day - timedelta(days=day.weekday())
+        week = [monday + timedelta(days=i) for i in range(7)]
+        labels = {day_label(d, len(by_day.get(d, []))): d for d in week}
+        chosen = st.pills("Semana", list(labels), default=day_label(day, len(by_day.get(day, []))),
+                          key=f"ag_week_{day}", label_visibility="collapsed")
+        if chosen and labels.get(chosen) != day:
+            st.session_state.ag_day = labels[chosen]
+            st.rerun()
 
-    items = by_day.get(day, [])
-    pending = sum(1 for j, _ in items for vn in agenda_versions(j) if is_reviewable(vn, j))
-    approved = sum(1 for j, _ in items for vn in agenda_versions(j) if decision_action(vn, j) == "approve_final")
-    st.markdown(f"<div class='pipe-title'>{esc(day_label(day))} · {len(items)} propuesta(s) · "
-                f"{pending} por decidir · {approved} aprobada(s)</div>", unsafe_allow_html=True)
-    render_notice()
-    if not items:
-        st.info("No hay propuestas planificadas para este día.")
-    cards = [(j, p, vn) for j, p in items for vn in (agenda_versions(j) or [None])]
-    for i in range(0, len(cards), 2):
-        cols = st.columns(2)
-        for col, (j, p, vn) in zip(cols, cards[i:i + 2]):
-            with col:
+        items = by_day.get(day, [])
+        pending = sum(1 for j, _ in items for vn in agenda_versions(j) if is_reviewable(vn, j))
+        approved = sum(1 for j, _ in items for vn in agenda_versions(j) if decision_action(vn, j) == "approve_final")
+        st.markdown(f"<div class='pipe-title'>{esc(day_label(day))} · {len(items)} propuesta(s) · "
+                    f"{pending} por decidir · {approved} aprobada(s)</div>", unsafe_allow_html=True)
+        render_notice()
+        if not items:
+            st.info("No hay propuestas planificadas para este día.")
+        cards = [(j, p, vn) for j, p in items for vn in (agenda_versions(j) or [None])]
+        with st.container(key="ag_grid"):
+            for j, p, vn in cards:
                 if vn:
                     render_agenda_card(j, p, vn)
                 else:
                     render_plan_card(j, p)
-    if unplanned:
-        with st.expander(f"Sin fecha en la agenda · {len(unplanned)} job(s)"):
-            st.caption("Estos jobs no tienen plan.json; Muse debe asignarles fecha para que aparezcan en un día.")
-            st.write(", ".join(unplanned))
+        if unplanned:
+            with st.expander(f"Sin fecha en la agenda · {len(unplanned)} job(s)"):
+                st.caption("Estos jobs no tienen plan.json; Muse debe asignarles fecha para que aparezcan en un día.")
+                st.write(", ".join(unplanned))
 
 
 # ───────────────────────── tabs ─────────────────────────
