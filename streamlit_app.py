@@ -53,6 +53,7 @@ GLOBAL_LOGIN_FAILS = 12       # fallos totales (todas las sesiones) que bloquean
 GLOBAL_LOCKOUT_S = 300
 CAPTION_MAX = 2200            # Instagram Graph API (IG User Media): caption <= 2200 caracteres, <= 30 hashtags
 HASHTAGS_MAX = 30
+HASHTAGS_IG = 5   # v10.5: tope vigente de Instagram (dic 2025); los sobrantes se quitan solos al autorizar
 NOTE_MAX = 2000
 RECENT_ACK_WINDOW_H = 6       # window for the accepted-ACK-not-yet-synced check
 RECENT_ACK_MAX_COMMITS = 20
@@ -1384,6 +1385,17 @@ def publish_pending(vn, *, fresh=False, job_id=None):
 def _to_utc_iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+def _cap_hashtags(caption, n=HASHTAGS_IG):
+    """Deja solo los primeros n hashtags (v10.5); devuelve (caption, cuántos se quitaron)."""
+    seen = [0]
+
+    def keep(m):
+        seen[0] += 1
+        return m.group(0) if seen[0] <= n else ""
+    out = re.sub(r"[ \t]?#\w+", keep, caption or "")
+    return out.rstrip(), max(0, seen[0] - n)
+
+
 def send_publish_authorization(targets, platform, operation, caption, scheduled_local, job_id=None, vn=None, supersedes=None):
     """Fresh checks against the bus, then a create-only authorize_publish in the inbox."""
     _J, _V = job_id or jid, vn or sel
@@ -1424,6 +1436,9 @@ def send_publish_authorization(targets, platform, operation, caption, scheduled_
                 and r.get("authorization_id") != supersedes):
             st.warning("Ya existe una autorización activa para ese destino. Revócala antes de reprogramar.")
             return
+    caption, _cut = _cap_hashtags(caption)
+    if _cut:
+        st.info(f"Se quitaron {_cut} hashtag(s): Instagram admite {HASHTAGS_IG} como máximo.")
     if len(caption or "") > CAPTION_MAX or len(re.findall(r"#\w+", caption or "")) > HASHTAGS_MAX:
         st.error(f"Instagram admite como máximo {CAPTION_MAX} caracteres y {HASHTAGS_MAX} hashtags en el caption.")
         return
@@ -1937,6 +1952,13 @@ def render_pub_row_card(j, p, vn, r, waiting, kp="pb"):
                                                    job_id=j, vn=vn, supersedes=r["authorization_id"])
                     if st.button("Revocar autorización", key=f"{kp}_rv_{r['authorization_id']}", width="stretch"):
                         send_publish_revoke(r["authorization_id"], job_id=j, vn=vn)
+            if r.get("status") == "failed":
+                # v10.5: una autorización fallida no se reintenta sola; este botón crea una nueva, inmediata, del mismo contenido
+                if st.button("Reintentar ahora", key=f"{kp}_retry_{r['authorization_id']}", type="primary", width="stretch",
+                             help="Nueva autorización inmediata con el mismo contenido y caption"):
+                    _, _, _t = publish_caps()
+                    send_publish_authorization(_t, r.get("platform"), r.get("operation"), r.get("caption") or "", None,
+                                               job_id=j, vn=vn)
             if st.button("Abrir en Studio", key=f"{kp}_st_{r['authorization_id']}", width="stretch"):
                 _go_studio(j, vn)
 
